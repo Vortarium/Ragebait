@@ -83,9 +83,18 @@
 
 <script>
 // ─── Audio ───────────────────────────────────────────────────────────────────
-const tracks   = ['music.mp3', 'music3.mp3', 'music4.mp3'];
-let trackIndex = 0;
-const bgMusic  = new Audio(tracks[trackIndex]);
+// Music tracks: 1 per 10 levels. music.mp3=1-10, music2.mp3=11-20 ... music10.mp3=91-100
+// title.mp3 for menu and end screen
+const LEVEL_TRACKS = [
+  'music.mp3','music2.mp3','music3.mp3','music4.mp3','music5.mp3',
+  'music6.mp3','music7.mp3','music8.mp3','music9.mp3','music10.mp3',
+];
+function trackForLevel(lvl) {
+  const idx = Math.min(Math.floor((lvl - 1) / 10), LEVEL_TRACKS.length - 1);
+  return LEVEL_TRACKS[idx];
+}
+let currentTrackSrc = 'title.mp3';
+const bgMusic  = new Audio(currentTrackSrc);
 const deathSfx = new Audio('death.mp3');
 const jumpSfx  = new Audio('jump.mp3');
 const winSfx   = new Audio('win.mp3');
@@ -95,11 +104,16 @@ jumpSfx.volume = 0.5;
 bgMusic.volume = 0.4;
 
 bgMusic.addEventListener('ended', () => {
-  trackIndex = (trackIndex + 1) % tracks.length;
-  bgMusic.src = tracks[trackIndex];
+  // Loop the current track
   bgMusic.play().catch(() => {});
 });
 
+function setMusicTrack(src) {
+  if (currentTrackSrc === src) return;
+  currentTrackSrc = src;
+  bgMusic.src = src;
+  bgMusic.play().catch(() => {});
+}
 function tryPlayMusic() { bgMusic.play().catch(() => {}); }
 function playClick() { clickSfx.currentTime = 0; clickSfx.play().catch(() => {}); }
 document.addEventListener('keydown', tryPlayMusic, { once: true });
@@ -119,7 +133,8 @@ const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) |
 // On mobile, leave room below canvas for touch controls
 const CTRL_H = IS_MOBILE ? Math.round(window.innerHeight * 0.22) : 0;
 const availH  = window.innerHeight - CTRL_H;
-const SCALE   = Math.max(1, Math.floor(Math.min(window.innerWidth / W, availH / (H + BRAND_H)) * (IS_MOBILE ? 0.98 : 0.9)));
+// Same scale logic on all devices — fit canvas to available space
+const SCALE   = Math.max(1, Math.floor(Math.min(window.innerWidth / W, availH / (H + BRAND_H))));
 canvas.style.width  = W * SCALE + 'px';
 canvas.style.height = (H + BRAND_H) * SCALE + 'px';
 canvas.style.display = 'block';
@@ -376,6 +391,7 @@ function makePlatform(x, y, w, type, rng) {
     type === 'slippery'   ? pickColor(rng, [[140,220,255],[120,200,240],[160,230,255]]) :
     type === 'flipwobble' ? [180, 60, 180] :
     type === 'countdown'  ? [40, 180, 40] :
+    type === 'onoff'      ? [60, 60, 200] :
                             [120,120,120];
 
   return {
@@ -398,7 +414,9 @@ function makePlatform(x, y, w, type, rng) {
     flipped: false,
     shakeX: 0, shakeY: 0,
     hasSpikes,
-    countdownHits: 0,  // set for 'countdown' type after creation
+    countdownHits: 0,
+    onoffTimer: Math.floor(rng() * 120), // stagger on/off phases
+    onoffOn: true,
     color: baseColor,
   };
 }
@@ -445,6 +463,10 @@ function generateLevel(lvl) {
   const count = 8 + Math.min(Math.floor(stageProgress * 6) + (stage - 1) * 2, 24);
   let lastX = 20 + 48;
   let lastY = groundY;
+  let prevType = 'static'; // track previous type to avoid dangerous pairs
+
+  // Types that must never appear consecutively
+  const DANGEROUS = new Set(['spikemove','flip','flipwobble','onoff']);
 
   for (let i = 0; i < count; i++) {
     // Gap size scales with stage — stage 1 is small, later stages bigger
@@ -462,7 +484,7 @@ function generateLevel(lvl) {
     const minW = Math.max(10, 28 - stage * 2 - Math.floor(stageProgress * 4));
     const pw   = minW + Math.floor(rng() * 16);
     const px   = lastX + gapX;
-    const py   = Math.max(40, Math.min(H - 40, lastY + gapY));
+    const py   = Math.max(20, Math.min(H - 20, lastY + gapY));
 
     const roll  = rng();
     const roll2 = rng();
@@ -517,19 +539,22 @@ function generateLevel(lvl) {
 
     } else {
       // Stage 7+ (60+): all types, new ones introduced gradually
-      // extra goes 0→1 over levels 60-100
       const extra = Math.min((lvl - 60) / 40, 1);
-      // Base types always present
       if      (roll < 0.18) type = 'moving';
       else if (roll < 0.34) type = 'wobble';
       else if (roll < 0.46) type = 'static';
-      // Secondary layer — all stage types still active
       if      (roll2 < 0.10) type = 'countdown';
       else if (roll2 < 0.20) type = 'slippery';
       else if (roll2 < 0.30) type = 'flip';
-      // New types introduced gradually
       else if (roll2 < 0.30 + extra * 0.12) type = 'flipwobble';
       else if (roll2 < 0.30 + extra * 0.22) type = 'spikemove';
+      // onoff from level 70+
+      if (lvl >= 70 && roll2 < 0.12 + Math.min((lvl - 70) / 30, 0.15)) type = 'onoff';
+    }
+
+    // Never place two dangerous types in a row — force safe fallback
+    if (DANGEROUS.has(type) && DANGEROUS.has(prevType)) {
+      type = rng() < 0.5 ? 'static' : 'moving';
     }
 
     const plat = makePlatform(px, py, pw, type, rng);
@@ -538,6 +563,7 @@ function generateLevel(lvl) {
     }
     plats.push(plat);
 
+    prevType = type;
     lastX = px + pw;
     lastY = py;
   }
@@ -564,11 +590,14 @@ function generateLevel(lvl) {
       const gap = curr.x - (prev.x + prev.w);
       if (gap > 58) {
         const orbCount = lvl >= 50 ? 3 : lvl >= 40 ? 2 : 1;
+        const midX = prev.x + prev.w + gap / 2;
+        const baseY = Math.min(prev.y, curr.y) - 24;
         for (let oi = 0; oi < orbCount; oi++) {
-          const frac = orbCount === 1 ? 0.5 : (oi + 1) / (orbCount + 1);
+          // Space orbs 20px apart horizontally, centered on gap midpoint
+          const offsetX = (oi - (orbCount - 1) / 2) * 20;
           orbs.push({
-            x: prev.x + prev.w + gap * frac - 3,
-            y: Math.min(prev.y, curr.y) - 24 - oi * 18,
+            x: midX + offsetX - 3,
+            y: baseY,
             used: false,
             pulse: Math.random() * Math.PI * 2,
             shineTimer: 0,
@@ -585,13 +614,29 @@ function generateLevel(lvl) {
     for (let i = 0; i < laserCount; i++) {
       const lx = 120 + rng() * (levelWidth - 200);
       lasers.push({
-        x: lx,
+        x: lx, axis: 'vertical',
         interval: Math.max(80, 160 - Math.floor((lvl - 60) * 0.8)),
         warnFrames: 40,
         timer: Math.floor(rng() * 120),
         state: 'idle',
         fireLength: 0,
         maxLength: H,
+      });
+    }
+  }
+  // Horizontal lasers (level 90+)
+  if (lvl >= 90) {
+    const hCount = 1 + Math.min(Math.floor((lvl - 90) / 5), 3);
+    for (let i = 0; i < hCount; i++) {
+      const ly = 30 + Math.floor(rng() * (H - 60));
+      lasers.push({
+        y: ly, axis: 'horizontal',
+        interval: Math.max(100, 180 - Math.floor((lvl - 90) * 1.5)),
+        warnFrames: 40,
+        timer: Math.floor(rng() * 120),
+        state: 'idle',
+        fireLength: 0,
+        maxLength: W,
       });
     }
   }
@@ -889,7 +934,7 @@ document.addEventListener('keydown', e => {
 
   if (e.key === 'Escape' && (gameState === 'playing' || gameState === 'endscreen')) {
     saveProgress();
-    startTransition('out', null, () => { gameState = 'menu'; menuStarted = true; });
+    startTransition('out', null, () => { gameState = 'menu'; menuStarted = true; setMusicTrack('title.mp3'); });
     return;
   }
   if (e.key === 'Escape' && gameState === 'records') {
@@ -931,6 +976,7 @@ canvas.addEventListener('click', e => {
         initLevel();
         gameState = 'playing';
         menuStarted = true;
+        setMusicTrack(trackForLevel(level));
       });
     }
     // Mode toggle button
@@ -1170,8 +1216,8 @@ function update() {
   const right = keys['ArrowRight'] || keys['d'] || keys['D'];
   const jump  = keys['ArrowUp']    || keys['w'] || keys['W'] || keys[' '];
 
-  // ── Wind (every 5 levels) ──
-  const isWindLevel = level % 5 === 0;
+  // ── Wind (every 5 levels, but NOT on boss levels ending in 0) ──
+  const isWindLevel = level % 5 === 0 && level % 10 !== 0;
   const windForce   = isWindLevel ? -(0.015 + Math.min(level / 200, 0.04)) : 0;
 
   // ── Slippery surface — higher speed cap, very low friction ──
@@ -1275,6 +1321,20 @@ function update() {
         p.x += p.moveDir * p.moveSpeed;
         if (Math.abs(p.x - p.originX) > p.moveRange) p.moveDir *= -1;
       }
+      // Spikemove: track rotation angle for draw
+      if (p.type === 'spikemove') {
+        if (!p.spikeAngle) p.spikeAngle = 0;
+        p.spikeAngle = (p.spikeAngle + 0.05) % (Math.PI * 2);
+      }
+    }
+
+    // On/off platform: toggle every 2 seconds (120 frames)
+    if (p.type === 'onoff') {
+      p.onoffTimer++;
+      if (p.onoffTimer >= 120) {
+        p.onoffTimer = 0;
+        p.onoffOn = !p.onoffOn;
+      }
     }
 
     // Shake offset — only when player is physically on this platform
@@ -1332,6 +1392,7 @@ function update() {
   // ── Collision ──
   for (const p of platforms) {
     if (p.broken) continue;
+    if (p.type === 'onoff' && !p.onoffOn) continue;
 
     const isWobbleType = p.type === 'wobble' || p.type === 'shakewobble' || p.type === 'flipwobble';
     const wobbleOff = (isWobbleType && p.crumbling)
@@ -1387,10 +1448,12 @@ function update() {
           // End screen
           timerRunning = false;
           gameState = 'endscreen';
+          setMusicTrack('title.mp3');
           return;
         }
         level++;
         saveProgress();
+        setMusicTrack(trackForLevel(level));
         initLevel();
         return;
       }
@@ -1410,7 +1473,7 @@ function update() {
       hardActive = false;
       if (gameMode === 'hardcore') { level = 1; deaths = 0; totalMs = 0; }
       saveProgress();
-      startTransition('out', null, () => { gameState = 'menu'; menuStarted = true; });
+      startTransition('out', null, () => { gameState = 'menu'; menuStarted = true; setMusicTrack('title.mp3'); });
       return;
     }
   }
@@ -1475,10 +1538,18 @@ function update() {
     }
   }
 
-  // ── Camera: horizontal follow ──
+  // ── Camera: horizontal follow + autoscroll (level 80+) ──
   camera.targetX = player.x - W * 0.35;
   camera.x += (camera.targetX - camera.x) * 0.1;
   if (camera.x < 0) camera.x = 0;
+
+  // Autoscroll: camera creeps right, player dies if left behind
+  if (level >= 80) {
+    const scrollSpeed = 0.1 + Math.min((level - 80) / 40, 0.3);
+    camera.x += scrollSpeed;
+    // Kill player if they fall behind the left edge of the screen
+    if (player.x + player.w < camera.x) { killPlayer(); return; }
+  }
 
   // ── Laser updates ──
   if (lasers) {
@@ -1491,9 +1562,19 @@ function update() {
       } else if (l.state === 'firing') {
         l.fireLength = Math.min(l.fireLength + 12, l.maxLength);
         if (l.timer >= 18) { l.state = 'idle'; l.timer = 0; }
-        if (player.x + player.w > l.x - 1 && player.x < l.x + 3 &&
-            player.y + player.h > 0 && player.y < l.fireLength) {
-          killPlayer(); return;
+        // Collision
+        if (l.axis === 'horizontal') {
+          // Horizontal laser fires from left edge across screen
+          const screenPlayerX = player.x - camera.x;
+          if (screenPlayerX + player.w > 0 && screenPlayerX < l.fireLength &&
+              player.y + player.h > l.y - 1 && player.y < l.y + 3) {
+            killPlayer(); return;
+          }
+        } else {
+          if (player.x + player.w > l.x - 1 && player.x < l.x + 3 &&
+              player.y + player.h > 0 && player.y < l.fireLength) {
+            killPlayer(); return;
+          }
         }
       }
     }
@@ -2192,6 +2273,8 @@ function draw() {
   // ── Platforms ──
   for (const p of platforms) {
     if (p.broken) continue;
+    // On/off: draw faded when off, skip collision but still show ghost
+    const onoffFaded = p.type === 'onoff' && !p.onoffOn;
 
     const isWobbleType = p.type === 'wobble' || p.type === 'shakewobble' || p.type === 'flipwobble';
     const isFlipType   = p.type === 'flip'   || p.type === 'flipwobble';
@@ -2203,6 +2286,8 @@ function draw() {
     const px = Math.round(p.x + wobbleOff + sx);
     const py = Math.round(p.y + sy);
     const pw = p.w;
+
+    if (onoffFaded) ctx.globalAlpha = 0.25;
 
     // ── Flip / flipwobble ──
     if (isFlipType) {
@@ -2219,6 +2304,7 @@ function draw() {
       ctx.fillStyle = 'rgba(255,255,255,0.2)';
       ctx.fillRect(px, py, pw, 1);
       drawSpikes(px, py, pw, p.flipped ? 'top' : 'bottom');
+      if (onoffFaded) ctx.globalAlpha = 1;
       continue;
     }
 
@@ -2240,6 +2326,7 @@ function draw() {
       const numX = px + Math.floor((pw - numStr.length * 4) / 2);
       const numY = py + 2;
       drawText(numStr, numX, numY, '#ffffff', 1);
+      if (onoffFaded) ctx.globalAlpha = 1;
       continue;
     }
 
@@ -2294,8 +2381,31 @@ function draw() {
       }
     }
 
-    // Spikemove: red spikes on top
-    if (p.type === 'spikemove') drawSpikes(px, py, pw, 'top');
+    // Spikemove: rotating spikes around the platform
+    if (p.type === 'spikemove') {
+      const angle = p.spikeAngle || 0;
+      const cx2 = px + pw / 2, cy2 = py + TILE / 2;
+      const r2 = pw / 2 + 3;
+      // Draw 4 spike tips rotating around the platform center
+      for (let si = 0; si < 4; si++) {
+        const a = angle + si * Math.PI / 2;
+        const tx = Math.round(cx2 + Math.cos(a) * r2);
+        const ty = Math.round(cy2 + Math.sin(a) * r2);
+        ctx.fillStyle = '#cc2222';
+        ctx.fillRect(tx - 1, ty - 1, 2, 2);
+        ctx.fillStyle = 'rgba(255,80,80,0.5)';
+        ctx.fillRect(tx - 2, ty - 2, 4, 4);
+      }
+    }
+
+    // On/off platform: draw with phase indicator
+    if (p.type === 'onoff') {
+      // Already drawn as normal platform above; add phase bar
+      const phaseFrac = p.onoffTimer / 120;
+      const barW = Math.round(pw * (p.onoffOn ? 1 - phaseFrac : phaseFrac));
+      ctx.fillStyle = p.onoffOn ? 'rgba(100,200,255,0.5)' : 'rgba(255,80,80,0.4)';
+      ctx.fillRect(px, py + TILE - 2, barW, 2);
+    }
 
     // Slippery: ice-blue sheen line on top
     if (p.type === 'slippery') {
@@ -2307,6 +2417,8 @@ function draw() {
 
     // Spikes on spike platforms
     if (p.hasSpikes) drawSpikes(px, py, pw, 'top');
+
+    if (onoffFaded) ctx.globalAlpha = 1;
 
     // Respawning ghost — faint outline while broken timer is running
     // (handled below after loop)
@@ -2324,20 +2436,39 @@ function draw() {
   // ── Lasers ──
   if (lasers) {
     for (const l of lasers) {
-      const lx = Math.round(l.x);
-      if (l.state === 'warn') {
-        const wa = (Math.floor(Date.now() / 80) % 2 === 0) ? 0.85 : 0.25;
-        ctx.fillStyle = `rgba(255,60,60,${wa})`;
-        ctx.fillRect(lx - 1, 0, 3, H);
-        ctx.fillStyle = `rgba(255,200,200,${wa})`;
-        ctx.fillRect(lx, 0, 1, H);
-      } else if (l.state === 'firing') {
-        ctx.fillStyle = 'rgba(255,0,0,0.12)';
-        ctx.fillRect(lx - 4, 0, 9, l.fireLength);
-        ctx.fillStyle = 'rgba(255,30,30,0.95)';
-        ctx.fillRect(lx - 1, 0, 3, l.fireLength);
-        ctx.fillStyle = 'rgba(255,220,220,0.95)';
-        ctx.fillRect(lx, 0, 1, l.fireLength);
+      if (l.axis === 'horizontal') {
+        // Horizontal laser — drawn in screen space (no world translate needed)
+        const ly = Math.round(l.y);
+        if (l.state === 'warn') {
+          const wa = (Math.floor(Date.now() / 80) % 2 === 0) ? 0.85 : 0.25;
+          ctx.fillStyle = `rgba(255,60,60,${wa})`;
+          ctx.fillRect(0, ly - 1, W, 3);
+          ctx.fillStyle = `rgba(255,200,200,${wa})`;
+          ctx.fillRect(0, ly, W, 1);
+        } else if (l.state === 'firing') {
+          ctx.fillStyle = 'rgba(255,0,0,0.12)';
+          ctx.fillRect(0, ly - 4, l.fireLength, 9);
+          ctx.fillStyle = 'rgba(255,30,30,0.95)';
+          ctx.fillRect(0, ly - 1, l.fireLength, 3);
+          ctx.fillStyle = 'rgba(255,220,220,0.95)';
+          ctx.fillRect(0, ly, l.fireLength, 1);
+        }
+      } else {
+        const lx = Math.round(l.x);
+        if (l.state === 'warn') {
+          const wa = (Math.floor(Date.now() / 80) % 2 === 0) ? 0.85 : 0.25;
+          ctx.fillStyle = `rgba(255,60,60,${wa})`;
+          ctx.fillRect(lx - 1, 0, 3, H);
+          ctx.fillStyle = `rgba(255,200,200,${wa})`;
+          ctx.fillRect(lx, 0, 1, H);
+        } else if (l.state === 'firing') {
+          ctx.fillStyle = 'rgba(255,0,0,0.12)';
+          ctx.fillRect(lx - 4, 0, 9, l.fireLength);
+          ctx.fillStyle = 'rgba(255,30,30,0.95)';
+          ctx.fillRect(lx - 1, 0, 3, l.fireLength);
+          ctx.fillStyle = 'rgba(255,220,220,0.95)';
+          ctx.fillRect(lx, 0, 1, l.fireLength);
+        }
       }
     }
   }
