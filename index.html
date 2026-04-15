@@ -1,0 +1,1623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAGEBAIT</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      font-family: monospace;
+    }
+    canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      border: 3px solid #444;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<script>
+// ─── Audio ───────────────────────────────────────────────────────────────────
+const tracks   = ['music.mp3', 'music3.mp3', 'music4.mp3'];
+let trackIndex = 0;
+const bgMusic  = new Audio(tracks[trackIndex]);
+const deathSfx = new Audio('death.mp3');
+const jumpSfx  = new Audio('jump.mp3');
+const winSfx   = new Audio('win.mp3');
+const clickSfx = new Audio('click.mp3');
+clickSfx.volume = 0.6;
+jumpSfx.volume = 0.5;
+bgMusic.volume = 0.4;
+
+bgMusic.addEventListener('ended', () => {
+  trackIndex = (trackIndex + 1) % tracks.length;
+  bgMusic.src = tracks[trackIndex];
+  bgMusic.play().catch(() => {});
+});
+
+function tryPlayMusic() { bgMusic.play().catch(() => {}); }
+function playClick() { clickSfx.currentTime = 0; clickSfx.play().catch(() => {}); }
+document.addEventListener('keydown', tryPlayMusic, { once: true });
+document.addEventListener('click',   tryPlayMusic, { once: true });
+
+// ─── Canvas ──────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const W = 320, H = 240, BRAND_H = 11;
+canvas.width  = W;
+canvas.height = H + BRAND_H;
+const SCALE = Math.floor(Math.min(window.innerWidth / W, window.innerHeight / (H + BRAND_H)) * 0.9) || 2;
+canvas.style.width  = W * SCALE + 'px';
+canvas.style.height = (H + BRAND_H) * SCALE + 'px';
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const GRAVITY    = 0.22;
+const JUMP_FORCE = -5.8;
+const SPEED      = 1.2;
+const TILE       = 8;
+
+// ─── Menu button layout ───────────────────────────────────────────────────────
+const BTN_PLAY  = { x: W/2 - 30, y: 158, w: 60, h: 14 };
+const BTN_REC   = { x: W/2 - 38, y: 178, w: 76, h: 14 };
+const BTN_RESET = { x: W/2 - 28, y: 198, w: 56, h: 14 };
+const BTN_BACK  = { x: W/2 - 20, y: H - 22, w: 40, h: 12 };
+
+// ─── State ───────────────────────────────────────────────────────────────────
+let level  = 1;
+let deaths = 0;
+let keys   = {};
+let player, platforms, orbs, camera, bgDecor, deathParticles;
+
+// gameState: 'menu' | 'records' | 'playing'
+let gameState = 'menu';
+let menuStarted = false; // true once player has played at least once
+
+// ─── Records (localStorage) ──────────────────────────────────────────────────
+function loadRecords() {
+  try { return JSON.parse(localStorage.getItem('ragebait_records') || '{}'); }
+  catch { return {}; }
+}
+function saveRecords(r) {
+  try { localStorage.setItem('ragebait_records', JSON.stringify(r)); } catch {}
+}
+function recordLevelComplete(lvl, ms, deathCount) {
+  const r = loadRecords();
+  if (!r[lvl]) r[lvl] = { bestMs: null, minDeaths: null };
+  if (r[lvl].bestMs === null || ms < r[lvl].bestMs) r[lvl].bestMs = ms;
+  if (r[lvl].minDeaths === null || deathCount < r[lvl].minDeaths) r[lvl].minDeaths = deathCount;
+  saveRecords(r);
+}
+function hasSavedProgress() {
+  try { return localStorage.getItem('ragebait_progress') !== null; } catch { return false; }
+}
+function saveProgress() {
+  try { localStorage.setItem('ragebait_progress', JSON.stringify({ level, deaths, totalMs })); } catch {}
+}
+function loadProgress() {
+  try {
+    const p = JSON.parse(localStorage.getItem('ragebait_progress') || 'null');
+    if (p) { level = p.level || 1; deaths = p.deaths || 0; totalMs = p.totalMs || 0; }
+  } catch {}
+}
+function clearProgress() {
+  try { localStorage.removeItem('ragebait_progress'); } catch {}
+}
+
+// ─── Speedrun timer ──────────────────────────────────────────────────────────
+let timerStart    = null;   // Date.now() when timer started
+let timerRunning  = false;
+let totalMs       = 0;      // accumulated ms across levels
+let levelStartMs  = 0;      // ms at start of current level
+
+function startTimerIfNeeded() {
+  if (!timerRunning) {
+    timerRunning = true;
+    timerStart   = Date.now();
+    levelStartMs = 0;
+  }
+}
+
+function getElapsedMs() {
+  if (!timerRunning) return totalMs;
+  return totalMs + (Date.now() - timerStart);
+}
+
+function formatTime(ms) {
+  const s  = Math.floor(ms / 1000);
+  const m  = Math.floor(s / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  const cs = String(Math.floor((ms % 1000) / 10)).padStart(2, '0');
+  return `${m}:${ss}:${cs}`;
+}
+
+// ─── Seeded RNG ──────────────────────────────────────────────────────────────
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function pickColor(rng, palette) {
+  return palette[Math.floor(rng() * palette.length)];
+}
+
+// ─── Platform factory ────────────────────────────────────────────────────────
+// types: 'static' | 'moving' | 'wobble' | 'flip' | 'shakemove' | 'flipwobble' | 'shakewobble'
+function makePlatform(x, y, w, type, rng) {
+  const canHoriz = level >= 5;
+  const isMoving = type === 'moving' || type === 'shakemove';
+  const moveAxis = isMoving ? (canHoriz && rng() > 0.5 ? 'x' : 'y') : 'y';
+  // spikes ONLY on flip/flipwobble — handled in draw, not here
+  const hasSpikes = false;
+
+  const baseColor =
+    type === 'static'     ? pickColor(rng, [[80,180,80],[60,160,60],[100,200,100]]) :
+    type === 'moving'     ? pickColor(rng, [[80,120,220],[60,100,200],[100,140,240]]) :
+    type === 'wobble'     ? pickColor(rng, [[200,120,60],[180,100,40],[220,140,80]]) :
+    type === 'shakemove'  ? pickColor(rng, [[60,160,220],[40,130,200],[80,180,240]]) :
+    type === 'flipwobble' ? [180, 60, 180] :
+    type === 'shakewobble'? [200, 100, 40] :
+    type === 'countdown'  ? [40, 180, 40] :
+                            [120,120,120];
+
+  return {
+    x, y, w, h: TILE,
+    type,
+    moveAxis,
+    moveDir: rng() > 0.5 ? 1 : -1,
+    moveRange: 18 + rng() * 28,
+    moveSpeed: 0.2 + rng() * 0.25,
+    originX: x, originY: y,
+    wobbleTimer: 0,
+    wobbleAmp: 1.5 + rng() * 2.5,
+    crumbleTimer: 0,
+    crumbleMax: 80 + rng() * 60,
+    crumbling: false,
+    broken: false,
+    respawnTimer: 0,
+    flipTimer: Math.floor(rng() * 60),
+    flipInterval: 120,  // 2 seconds at 60fps
+    flipped: false,
+    shakeX: 0, shakeY: 0,
+    hasSpikes,
+    countdownHits: 0,  // set for 'countdown' type after creation
+    color: baseColor,
+  };
+}
+
+// ─── Level generation (horizontal layout) ────────────────────────────────────
+// Each playthrough gets a unique base seed so levels are never the same twice
+let playthroughSeed = Math.floor(Math.random() * 0xffffff);
+
+function generateLevel(lvl) {
+  const rng = mulberry32(playthroughSeed ^ (lvl * 1337 + 42));
+  const plats = [];
+
+  const groundY = H - 30;
+
+  // Start platform — always safe, no spikes
+  const startPlat = makePlatform(20, groundY, 48, 'static', rng);
+  startPlat.hasSpikes = false;
+  plats.push(startPlat);
+
+  const count = 9 + Math.min(lvl * 2, 22);
+  let lastX = 20 + 48;
+  let lastY = groundY;
+
+  for (let i = 0; i < count; i++) {
+    // Every ~4 platforms from level 3+, force a big orb gap
+    const forceOrbGap = lvl >= 3 && i > 0 && i % 4 === 0 && rng() < 0.5;
+    // Cap max gap so nothing is impossible without an orb
+    const gapX = forceOrbGap ? (80 + rng() * 20) : (22 + rng() * 28);
+    const gapY = (rng() - 0.5) * 40;
+    const pw   = 16 + Math.floor(rng() * 28);
+    const px   = lastX + gapX;
+    const py   = Math.max(40, Math.min(H - 40, lastY + gapY));
+
+    const roll  = rng();
+    const roll2 = rng();
+    let type = 'static';
+    if (lvl >= 2 && roll < 0.22 + lvl * 0.02) type = 'moving';
+    else if (lvl >= 3 && roll < 0.42 + lvl * 0.02) type = 'wobble';
+
+    // combo / special types scale with level
+    if      (lvl >= 7 && roll2 < 0.05) type = 'shakemove';
+    else if (lvl >= 6 && roll2 < 0.09) type = 'flipwobble';
+    else if (lvl >= 5 && roll2 < 0.13) type = 'shakemove';
+    else if (lvl >= 4 && roll2 < 0.18) type = 'flip';
+    else if (lvl >= 2 && roll2 < 0.25) type = 'countdown';
+
+    const plat = makePlatform(px, py, pw, type, rng);
+    if (type === 'countdown') {
+      plat.countdownHits = 1 + Math.floor(rng() * 3); // 1–3
+    }
+    plats.push(plat);
+
+    lastX = px + pw;
+    lastY = py;
+  }
+
+  // Goal platform
+  const goalX = lastX + 30;
+  const goalY = Math.max(40, lastY - 10);
+  plats.push({ x: goalX, y: goalY, w: 40, h: TILE, type: 'goal',
+               color: [220,220,60], broken: false, crumbling: false,
+               moveAxis: 'y', originX: goalX, originY: goalY, hasSpikes: false });
+
+  const levelWidth = goalX + 80;
+
+  // ── Double-jump orbs on big gaps (level 3+) ──────────────────────────────
+  const orbs = [];
+  if (lvl >= 3) {
+    for (let i = 1; i < plats.length; i++) {
+      const prev = plats[i - 1];
+      const curr = plats[i];
+      const gap = curr.x - (prev.x + prev.w);
+      // Place an orb on any gap that's too wide to jump without help
+      if (gap > 58) {
+        orbs.push({
+          x: prev.x + prev.w + gap / 2 - 3,
+          y: Math.min(prev.y, curr.y) - 24,
+          used: false,
+          pulse: Math.random() * Math.PI * 2,
+          shineTimer: 0,
+        });
+      }
+    }
+  }
+
+  return { plats, levelWidth, orbs };
+}
+
+// ─── Background decorations ──────────────────────────────────────────────────
+function generateBgDecor(levelWidth, rng) {
+  const decor = [];
+
+  // Moon (fixed near top-left area of world)
+  decor.push({ type: 'moon', x: 60, y: 30 });
+
+  // Stars scattered across level width
+  for (let i = 0; i < 80; i++) {
+    decor.push({
+      type: 'star',
+      x: rng() * levelWidth,
+      y: rng() * (H * 0.75),
+      s: rng() > 0.75 ? 2 : 1,
+      b: 0.3 + rng() * 0.7,
+    });
+  }
+
+  // Pixelated trees scattered on ground level
+  const groundY = H - 30;
+  for (let i = 0; i < Math.floor(levelWidth / 60); i++) {
+    decor.push({
+      type: 'tree',
+      x: 80 + i * 55 + rng() * 30,
+      y: groundY,
+    });
+  }
+
+  return decor;
+}
+
+// ─── Draw spikes ─────────────────────────────────────────────────────────────
+// side: 'top' = spikes point upward, 'bottom' = spikes point downward
+function drawSpikes(x, y, w, side) {
+  const sz = 3; // spike width
+  ctx.fillStyle = '#cc2222';
+  for (let sx = x; sx < x + w - 1; sx += sz + 1) {
+    if (side === 'top') {
+      // triangle pointing up: base at py, tip above
+      ctx.fillRect(sx,     y - 2, 1, 2);
+      ctx.fillRect(sx + 1, y - 3, 1, 3);
+      ctx.fillRect(sx + 2, y - 2, 1, 2);
+    } else {
+      // triangle pointing down: base at py+TILE, tip below
+      ctx.fillRect(sx,     y + TILE, 1, 2);
+      ctx.fillRect(sx + 1, y + TILE, 1, 3);
+      ctx.fillRect(sx + 2, y + TILE, 1, 2);
+    }
+  }
+  // highlight
+  ctx.fillStyle = 'rgba(255,100,100,0.6)';
+  for (let sx = x + 1; sx < x + w - 1; sx += sz + 1) {
+    if (side === 'top')   ctx.fillRect(sx, y - 3, 1, 1);
+    else                  ctx.fillRect(sx, y + TILE + 2, 1, 1);
+  }
+}
+
+// ─── Draw pixel tree ─────────────────────────────────────────────────────────
+function drawTree(x, y) {
+  // Colors blended toward the dark sky horizon (bottom sky band ~rgb(4,2,16))
+  // trunk — very dark, nearly invisible against horizon
+  ctx.fillStyle = 'rgb(8,4,20)';
+  ctx.fillRect(x + 3, y - 8, 2, 8);
+  // foliage layers — silhouette tones matching sky bands
+  ctx.fillStyle = 'rgb(6,3,18)';
+  ctx.fillRect(x + 1, y - 14, 6, 4);
+  ctx.fillStyle = 'rgb(7,4,22)';
+  ctx.fillRect(x,     y - 18, 8, 4);
+  ctx.fillStyle = 'rgb(9,5,26)';
+  ctx.fillRect(x + 1, y - 22, 6, 4);
+  ctx.fillStyle = 'rgb(10,5,28)';
+  ctx.fillRect(x + 2, y - 25, 4, 3);
+  // faint edge highlight so silhouette reads against slightly lighter sky above
+  ctx.fillStyle = 'rgba(30,15,60,0.5)';
+  ctx.fillRect(x + 2, y - 25, 1, 1);
+  ctx.fillRect(x,     y - 18, 1, 1);
+}
+
+// ─── Draw moon ───────────────────────────────────────────────────────────────
+function drawMoon(x, y) {
+  const sz = 2;
+
+  // Full moon disc — 11x11 pixel circle map
+  const disc = [
+    [0,0,0,1,1,1,1,1,0,0,0],
+    [0,0,1,1,1,1,1,1,1,0,0],
+    [0,1,1,1,1,1,1,1,1,1,0],
+    [1,1,1,1,1,1,1,1,1,1,1],
+    [1,1,1,1,1,1,1,1,1,1,1],
+    [1,1,1,1,1,1,1,1,1,1,1],
+    [1,1,1,1,1,1,1,1,1,1,1],
+    [1,1,1,1,1,1,1,1,1,1,1],
+    [0,1,1,1,1,1,1,1,1,1,0],
+    [0,0,1,1,1,1,1,1,1,0,0],
+    [0,0,0,1,1,1,1,1,0,0,0],
+  ];
+
+  // Shadow overlay on right side (crescent effect)
+  const shadow = [
+    [0,0,0,0,0,0,1,1,0,0,0],
+    [0,0,0,0,0,1,1,1,1,0,0],
+    [0,0,0,0,1,1,1,1,1,1,0],
+    [0,0,0,0,1,1,1,1,1,1,1],
+    [0,0,0,0,1,1,1,1,1,1,1],
+    [0,0,0,0,1,1,1,1,1,1,1],
+    [0,0,0,0,1,1,1,1,1,1,1],
+    [0,0,0,0,1,1,1,1,1,1,1],
+    [0,0,0,0,1,1,1,1,1,1,0],
+    [0,0,0,0,0,1,1,1,1,0,0],
+    [0,0,0,0,0,0,1,1,0,0,0],
+  ];
+
+  // Craters [row, col, size] — small pixel dents
+  const craters = [
+    [3, 1, 1], [5, 3, 2], [7, 1, 1],
+    [2, 4, 1], [6, 5, 1],
+  ];
+
+  // Outer glow
+  ctx.fillStyle = 'rgba(255,255,180,0.06)';
+  ctx.fillRect(x - 6, y - 6, 11 * sz + 12, 11 * sz + 12);
+  ctx.fillStyle = 'rgba(255,255,180,0.1)';
+  ctx.fillRect(x - 3, y - 3, 11 * sz + 6, 11 * sz + 6);
+
+  // Draw disc
+  for (let r = 0; r < disc.length; r++) {
+    for (let c = 0; c < disc[r].length; c++) {
+      if (!disc[r][c]) continue;
+      if (shadow[r][c]) {
+        // shadow side — deep blue-grey
+        ctx.fillStyle = 'rgb(18,18,38)';
+      } else {
+        // lit side — warm ivory with slight variation
+        const v = 220 + ((r + c) % 3) * 8;
+        ctx.fillStyle = `rgb(${v},${v - 10},${Math.round(v * 0.75)})`;
+      }
+      ctx.fillRect(x + c * sz, y + r * sz, sz, sz);
+    }
+  }
+
+  // Craters (only on lit side)
+  for (const [cr, cc, cs] of craters) {
+    if (shadow[cr][cc]) continue;
+    ctx.fillStyle = 'rgba(160,150,100,0.55)';
+    ctx.fillRect(x + cc * sz, y + cr * sz, cs * sz, cs * sz);
+    // crater highlight
+    ctx.fillStyle = 'rgba(255,255,200,0.25)';
+    ctx.fillRect(x + cc * sz, y + cr * sz, sz, sz);
+  }
+
+  // Terminator edge soft blend
+  ctx.fillStyle = 'rgba(30,30,80,0.35)';
+  for (let r = 0; r < disc.length; r++) {
+    const c = 5;
+    if (disc[r][c]) ctx.fillRect(x + c * sz, y + r * sz, sz, sz);
+  }
+
+  // Occasional glimmer — a bright pixel flashes on the lit side
+  const glimmerCycle = Math.floor(Date.now() / 1800) % 5; // changes every 1.8s
+  const glimmerPixels = [[2,2],[4,1],[1,5],[3,6],[0,4],[2,7]];
+  const gp = glimmerPixels[glimmerCycle % glimmerPixels.length];
+  if (!shadow[gp[0]] || !shadow[gp[0]][gp[1]]) {
+    const glimmerPhase = (Date.now() % 1800) / 1800;
+    // sharp flash: bright for ~15% of the cycle
+    const flash = glimmerPhase < 0.15
+      ? Math.sin((glimmerPhase / 0.15) * Math.PI)
+      : 0;
+    if (flash > 0.01 && disc[gp[0]] && disc[gp[0]][gp[1]]) {
+      ctx.fillStyle = `rgba(255,255,255,${flash * 0.95})`;
+      ctx.fillRect(x + gp[1] * sz - 1, y + gp[0] * sz - 1, sz + 2, sz + 2);
+      // tiny cross sparkle
+      ctx.fillStyle = `rgba(255,255,255,${flash * 0.6})`;
+      ctx.fillRect(x + gp[1] * sz + Math.floor(sz/2), y + gp[0] * sz - 2, 1, sz + 4);
+      ctx.fillRect(x + gp[1] * sz - 2, y + gp[0] * sz + Math.floor(sz/2), sz + 4, 1);
+    }
+  }
+}
+
+// ─── Init / reset ────────────────────────────────────────────────────────────
+function initLevel() {
+  const rng = mulberry32(level * 999 + 7);
+  const { plats, levelWidth, orbs: lvlOrbs } = generateLevel(level);
+  platforms      = plats;
+  orbs           = lvlOrbs;
+  deathParticles = [];
+  bgDecor        = generateBgDecor(levelWidth, rng);
+
+  const start = platforms[0];
+  player = {
+    x: start.x + 4,
+    y: start.y - 10,
+    w: 6, h: 8,
+    vx: 0, vy: 0,
+    onGround: false,
+    dead: false,
+    deathTimer: 0,
+    facingRight: true,
+    blinkTimer: 0,
+    onPlatform: null,
+    canDoubleJump: false,
+    hasDoubleJump: false,
+  };
+
+  camera = { x: 0, targetX: 0 };
+}
+
+// ─── Input ───────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.repeat) return; // ignore key-repeat events
+  keys[e.key] = true;
+  if (e.key === 'Escape' && gameState === 'playing') {
+    saveProgress();
+    gameState = 'menu';
+    menuStarted = true;
+    return;
+  }
+  if (e.key === 'Escape' && gameState === 'records') {
+    gameState = 'menu';
+    return;
+  }
+  if (gameState !== 'playing') return;
+  if ((e.key === ' ' || e.key === 'Enter') && player && player.dead && player.deathTimer > 60) {
+    deaths++;
+    initLevel();
+  }
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// ─── Click: menu buttons + double-jump orb ───────────────────────────────────
+canvas.addEventListener('click', e => {
+  const rect   = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = (H + BRAND_H) / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top)  * scaleY;
+
+  if (gameState === 'menu') {
+    // PLAY button
+    if (mx >= BTN_PLAY.x && mx <= BTN_PLAY.x + BTN_PLAY.w &&
+        my >= BTN_PLAY.y && my <= BTN_PLAY.y + BTN_PLAY.h) {
+      playClick();
+      tryPlayMusic();
+      if (hasSavedProgress()) loadProgress();
+      else { level = 1; deaths = 0; totalMs = 0; }
+      timerRunning = false; timerStart = null;
+      initLevel();
+      gameState = 'playing';
+      menuStarted = true;
+    }
+    // RECORDS button
+    if (mx >= BTN_REC.x && mx <= BTN_REC.x + BTN_REC.w &&
+        my >= BTN_REC.y && my <= BTN_REC.y + BTN_REC.h) {
+      playClick();
+      gameState = 'records';
+    }
+    // RESET button (only shown after playing)
+    if (menuStarted &&
+        mx >= BTN_RESET.x && mx <= BTN_RESET.x + BTN_RESET.w &&
+        my >= BTN_RESET.y && my <= BTN_RESET.y + BTN_RESET.h) {
+      playClick();
+      clearProgress();
+      level = 1; deaths = 0; totalMs = 0;
+      timerRunning = false; timerStart = null;
+      playthroughSeed = Math.floor(Math.random() * 0xffffff);
+      menuStarted = false;
+    }
+    return;
+  }
+
+  if (gameState === 'records') {
+    // Back button
+    if (mx >= BTN_BACK.x && mx <= BTN_BACK.x + BTN_BACK.w &&
+        my >= BTN_BACK.y && my <= BTN_BACK.y + BTN_BACK.h) {
+      playClick();
+      gameState = 'menu';
+    }
+    return;
+  }
+
+  // In-game: orb click
+  if (gameState !== 'playing') return;
+  if (!player || player.dead) return;
+  if (!orbs) return;
+  const cx = mx + camera.x;
+  const cy = my;
+  for (const orb of orbs) {
+    if (orb.used) continue;
+    const dx = cx - (orb.x + 3);
+    const dy = cy - (orb.y + 3);
+    if (Math.sqrt(dx*dx + dy*dy) < 24) {
+      orb.shineTimer = 20;
+      player.vy = JUMP_FORCE;
+      player.onGround = false;
+      jumpSfx.currentTime = 0;
+      jumpSfx.play().catch(() => {});
+      return;
+    }
+  }
+});
+
+// ─── Mouse tracking for hover ────────────────────────────────────────────────
+let mouseX = -1, mouseY = -1;
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - rect.left) * (W / rect.width);
+  mouseY = (e.clientY - rect.top)  * ((H + BRAND_H) / rect.height);
+});
+canvas.addEventListener('mouseleave', () => { mouseX = -1; mouseY = -1; });
+const FONT = {
+  '0':[[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
+  '1':[[0,1,0],[1,1,0],[0,1,0],[0,1,0],[1,1,1]],
+  '2':[[1,1,1],[0,0,1],[1,1,1],[1,0,0],[1,1,1]],
+  '3':[[1,1,1],[0,0,1],[0,1,1],[0,0,1],[1,1,1]],
+  '4':[[1,0,1],[1,0,1],[1,1,1],[0,0,1],[0,0,1]],
+  '5':[[1,1,1],[1,0,0],[1,1,1],[0,0,1],[1,1,1]],
+  '6':[[1,1,1],[1,0,0],[1,1,1],[1,0,1],[1,1,1]],
+  '7':[[1,1,1],[0,0,1],[0,1,0],[0,1,0],[0,1,0]],
+  '8':[[1,1,1],[1,0,1],[1,1,1],[1,0,1],[1,1,1]],
+  '9':[[1,1,1],[1,0,1],[1,1,1],[0,0,1],[1,1,1]],
+  'L':[[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,1,1]],
+  'E':[[1,1,1],[1,0,0],[1,1,0],[1,0,0],[1,1,1]],
+  'V':[[1,0,1],[1,0,1],[1,0,1],[1,0,1],[0,1,0]],
+  'D':[[1,1,0],[1,0,1],[1,0,1],[1,0,1],[1,1,0]],
+  'A':[[0,1,0],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],
+  'T':[[1,1,1],[0,1,0],[0,1,0],[0,1,0],[0,1,0]],
+  'H':[[1,0,1],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],
+  'S':[[0,1,1],[1,0,0],[0,1,0],[0,0,1],[1,1,0]],
+  'Y':[[1,0,1],[1,0,1],[0,1,0],[0,1,0],[0,1,0]],
+  'O':[[0,1,0],[1,0,1],[1,0,1],[1,0,1],[0,1,0]],
+  'U':[[1,0,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
+  'I':[[1,1,1],[0,1,0],[0,1,0],[0,1,0],[1,1,1]],
+  'N':[[1,0,1],[1,1,1],[1,1,1],[1,0,1],[1,0,1]],
+  'M':[[1,0,1],[1,1,1],[1,0,1],[1,0,1],[1,0,1]],
+  'G':[[0,1,1],[1,0,0],[1,0,1],[1,0,1],[0,1,1]],
+  'P':[[1,1,0],[1,0,1],[1,1,0],[1,0,0],[1,0,0]],
+  'R':[[1,1,0],[1,0,1],[1,1,0],[1,1,0],[1,0,1]],
+  'K':[[1,0,1],[1,1,0],[1,0,0],[1,1,0],[1,0,1]],
+  'C':[[0,1,1],[1,0,0],[1,0,0],[1,0,0],[0,1,1]],
+  'X':[[1,0,1],[1,0,1],[0,1,0],[1,0,1],[1,0,1]],
+  'B':[[1,1,0],[1,0,1],[1,1,0],[1,0,1],[1,1,0]],
+  'F':[[1,1,1],[1,0,0],[1,1,0],[1,0,0],[1,0,0]],
+  'W':[[1,0,1],[1,0,1],[1,0,1],[1,1,1],[0,1,0]],
+  'J':[[0,0,1],[0,0,1],[0,0,1],[1,0,1],[0,1,0]],
+  'Z':[[1,1,1],[0,0,1],[0,1,0],[1,0,0],[1,1,1]],
+  'Q':[[0,1,0],[1,0,1],[1,0,1],[1,1,1],[0,1,1]],
+  '-':[[0,0,0],[0,0,0],[1,1,1],[0,0,0],[0,0,0]],
+  '.':[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,1,0]],
+  "'":[[0,1,0],[0,1,0],[0,0,0],[0,0,0],[0,0,0]],
+  ' ':[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0]],
+  '!':[[0,1,0],[0,1,0],[0,1,0],[0,0,0],[0,1,0]],
+  ':':[[0,0,0],[0,1,0],[0,0,0],[0,1,0],[0,0,0]],
+};
+
+// ─── Pixel skull (7x7) ───────────────────────────────────────────────────────
+function drawSkull(x, y) {
+  // 7 wide x 7 tall skull pixel map
+  const s = [
+    [0,1,1,1,1,1,0],
+    [1,1,1,1,1,1,1],
+    [1,0,1,1,1,0,1],
+    [1,1,1,1,1,1,1],
+    [0,1,1,1,1,1,0],
+    [0,1,0,1,0,1,0],
+    [0,1,1,1,1,1,0],
+  ];
+  for (let r = 0; r < s.length; r++) {
+    for (let c = 0; c < s[r].length; c++) {
+      if (!s[r][c]) continue;
+      // eyes are darker
+      const isEye = r === 2 && (c === 1 || c === 5);
+      ctx.fillStyle = isEye ? '#220000' : '#ddaaaa';
+      ctx.fillRect(x + c, y + r, 1, 1);
+    }
+  }
+}
+
+function textWidth(text, scale = 1) {
+  return text.toUpperCase().length * 4 * scale;
+}
+
+function drawText(text, x, y, color = '#fff', scale = 1) {
+  ctx.fillStyle = color;
+  let cx = x;
+  for (const ch of text.toUpperCase()) {
+    const glyph = FONT[ch];
+    if (!glyph) { cx += 4 * scale; continue; }
+    for (let row = 0; row < glyph.length; row++)
+      for (let col = 0; col < glyph[row].length; col++)
+        if (glyph[row][col])
+          ctx.fillRect(cx + col * scale, y + row * scale, scale, scale);
+    cx += 4 * scale;
+  }
+}
+
+// ─── Brand label (pixel font, purple gradient shimmer) ───────────────────────
+function drawBrand() {
+  const text  = 'VORTARIUM PRODUCTIONS';
+  const scale = 1;
+  const charW = 4 * scale;
+  const totalW = text.length * charW;
+  const bx = Math.floor((W - totalW) / 2);
+  const by = H + 3;
+  const t  = Date.now() * 0.002;
+
+  // Purple palette: deep purple → violet → bright purple → lavender → back
+  const palette = [
+    [58,  0, 111],
+    [106, 0, 200],
+    [155, 48, 255],
+    [192, 96, 255],
+    [220,140, 255],
+    [192, 96, 255],
+    [155, 48, 255],
+    [106,  0, 200],
+  ];
+
+  let cx = bx;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const glyph = FONT[ch];
+    // wave offset per character
+    const wave = (i / text.length + t) % 1;
+    const pi   = wave * (palette.length - 1);
+    const lo   = Math.floor(pi) % palette.length;
+    const hi   = (lo + 1) % palette.length;
+    const frac = pi - Math.floor(pi);
+    const r = Math.round(palette[lo][0] + (palette[hi][0] - palette[lo][0]) * frac);
+    const g = Math.round(palette[lo][1] + (palette[hi][1] - palette[lo][1]) * frac);
+    const b = Math.round(palette[lo][2] + (palette[hi][2] - palette[lo][2]) * frac);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+
+    if (glyph) {
+      for (let row = 0; row < glyph.length; row++)
+        for (let col = 0; col < glyph[row].length; col++)
+          if (glyph[row][col])
+            ctx.fillRect(cx + col * scale, by + row * scale, scale, scale);
+    }
+    cx += charW;
+  }
+}
+
+// ─── Update ──────────────────────────────────────────────────────────────────
+function update() {
+  if (gameState !== 'playing') return;
+  if (!player) return;
+
+  if (player.dead) {
+    player.deathTimer++;
+    // tick death particles
+    if (deathParticles) {
+      for (const p of deathParticles) {
+        p.x  += p.vx;
+        p.y  += p.vy;
+        p.vy += 0.18;
+        p.life--;
+      }
+    }
+    return;
+  }
+
+  const left  = keys['ArrowLeft']  || keys['a'] || keys['A'];
+  const right = keys['ArrowRight'] || keys['d'] || keys['D'];
+  const jump  = keys['ArrowUp']    || keys['w'] || keys['W'] || keys[' '];
+
+  if (left)  { player.vx = -SPEED; player.facingRight = false; startTimerIfNeeded(); }
+  if (right) { player.vx =  SPEED; player.facingRight = true;  startTimerIfNeeded(); }
+  if (!left && !right) player.vx *= 0.75;
+
+  if (jump && player.onGround) {
+    player.vy = JUMP_FORCE;
+    player.onGround = false;
+    startTimerIfNeeded();
+    // Countdown tile: subtract a jump when jumping off it
+    if (player.onPlatform && player.onPlatform.type === 'countdown') {
+      const cp = player.onPlatform;
+      cp.countdownHits--;
+      if (cp.countdownHits <= 0) {
+        cp.broken = true;
+        cp.respawnTimer = 0;
+      }
+    }
+    jumpSfx.currentTime = 0;
+    jumpSfx.play().catch(() => {});
+  }
+
+  // ── Orb activation via spacebar (mid-air, near orb) ──
+  if (jump && !player.onGround && orbs) {
+    for (const orb of orbs) {
+      if (orb.used) continue;
+      const ORB_R = 12; // hitbox radius
+      const ocx = orb.x + 3;
+      const ocy = orb.y + 3;
+      const pcx = player.x + player.w / 2;
+      const pcy = player.y + player.h / 2;
+      if (Math.abs(pcx - ocx) < ORB_R + player.w / 2 &&
+          Math.abs(pcy - ocy) < ORB_R + player.h / 2) {
+        orb.shineTimer = 20;
+        player.vy = JUMP_FORCE;
+        startTimerIfNeeded();
+        jumpSfx.currentTime = 0;
+        jumpSfx.play().catch(() => {});
+        break;
+      }
+    }
+  }
+
+  player.vy += GRAVITY;
+
+  // ── Platform updates ──
+  player.onGround   = false;
+  const prevOnPlat  = player.onPlatform;
+  player.onPlatform = null;
+
+  // Apply player velocity first
+  player.x += player.vx;
+  player.y += player.vy;
+  player.blinkTimer++;
+
+  for (const p of platforms) {
+    // Respawn broken wobble/shakewobble platforms after 2s (120 frames)
+    if (p.broken) {
+      if (p.type !== 'countdown') {
+        p.respawnTimer++;
+        if (p.respawnTimer >= 120) {
+          p.broken = false;
+          p.crumbling = false;
+          p.crumbleTimer = 0;
+          p.wobbleTimer = 0;
+          p.respawnTimer = 0;
+          p.x = p.originX;
+          p.y = p.originY;
+        }
+      }
+      continue;
+    }
+
+    const prevX = p.x;
+    const prevY = p.y;
+
+    // Moving / shakemove translation
+    if (p.type === 'moving' || p.type === 'shakemove') {
+      if (p.moveAxis === 'y') {
+        p.y += p.moveDir * p.moveSpeed;
+        if (Math.abs(p.y - p.originY) > p.moveRange) p.moveDir *= -1;
+      } else {
+        p.x += p.moveDir * p.moveSpeed;
+        if (Math.abs(p.x - p.originX) > p.moveRange) p.moveDir *= -1;
+      }
+    }
+
+    // Shake offset — only when player is physically on this platform
+    if (p.type === 'shakemove' || p.type === 'shakewobble') {
+      p.wobbleTimer++; // always tick for shake animation
+      if (prevOnPlat === p) {
+        const t = p.wobbleTimer * 0.55;
+        p.shakeX = Math.sin(t * 1.7) * 1.5;
+        p.shakeY = Math.cos(t * 2.3) * 1.5;
+      } else {
+        p.shakeX = 0;
+        p.shakeY = 0;
+      }
+    }
+
+    // Wobble crumble — only ticks while player stands on it (never shakemove)
+    const isWobbleType = p.type === 'wobble' || p.type === 'shakewobble' || p.type === 'flipwobble';
+    if (isWobbleType) {
+      p.wobbleTimer++;
+      if (p.crumbling) {
+        if (prevOnPlat === p) p.crumbleTimer++;
+        if (p.crumbleTimer >= p.crumbleMax) {
+          p.broken = true;
+          p.respawnTimer = 0;
+        }
+      }
+    }
+
+    // Flip (flip, flipwobble)
+    if (p.type === 'flip' || p.type === 'flipwobble') {
+      p.flipTimer++;
+      if (p.flipTimer >= p.flipInterval) {
+        p.flipTimer = 0;
+        p.flipped = !p.flipped;
+      }
+    }
+
+    // Carry player with platform delta (applied after player velocity)
+    if (prevOnPlat === p) {
+      player.x += p.x - prevX;
+      player.y += p.y - prevY;
+      // Zero out player vx when riding a horizontal moving platform
+      // so they don't inherit momentum on step-off
+      if ((p.type === 'moving' || p.type === 'shakemove') && p.moveAxis === 'x') {
+        player.vx = 0;
+      }
+    }
+  }
+
+  // ── Collision ──
+  for (const p of platforms) {
+    if (p.broken) continue;
+
+    const isWobbleType = p.type === 'wobble' || p.type === 'shakewobble' || p.type === 'flipwobble';
+    const wobbleOff = (isWobbleType && p.crumbling)
+      ? Math.sin(p.wobbleTimer * 0.4) * p.wobbleAmp : 0;
+    const sx = (p.shakeX || 0);
+    const sy = (p.shakeY || 0);
+
+    const px = p.x + wobbleOff + sx;
+    const py = p.y + sy;
+
+    const overlapX = player.x + player.w > px && player.x < px + p.w;
+    const overlapY = player.y + player.h > py && player.y + player.h < py + p.h + player.vy + 2;
+
+    if (overlapX && overlapY && player.vy >= 0) {
+      const isFlipType = p.type === 'flip' || p.type === 'flipwobble';
+      if (isFlipType && p.flipped) { killPlayer(); return; }
+      if (p.hasSpikes) { killPlayer(); return; }
+
+      player.y = py - player.h;
+      player.vy = 0;
+      player.onGround = true;
+      player.onPlatform = p;
+
+      if (isWobbleType) p.crumbling = true;
+      if (p.type === 'goal') {
+        winSfx.currentTime = 0;
+        winSfx.play().catch(() => {});
+        const elapsed = getElapsedMs();
+        recordLevelComplete(level, elapsed - totalMs, deaths);
+        totalMs = elapsed;
+        timerStart = Date.now();
+        level++;
+        saveProgress();
+        initLevel();
+        return;
+      }
+    }
+  }
+
+  // ── Camera: horizontal follow ──
+  camera.targetX = player.x - W * 0.35;
+  camera.x += (camera.targetX - camera.x) * 0.1;
+  if (camera.x < 0) camera.x = 0;
+
+  // ── Death: fall off bottom ──
+  if (player.y > H + 40) { killPlayer(); return; }
+}
+
+// ─── Death messages ──────────────────────────────────────────────────────────
+const DEATH_MSGS = [
+  'SKILL ISSUE',
+  'GRAVITY EXISTS',
+  'BOLD STRATEGY',
+  'PAINFUL TO WATCH',
+  'CERTIFIED FUMBLE',
+  'TRY NOT DYING',
+  'INCREDIBLE',
+  'TRULY SOMETHING',
+  'PHYSICS ONE YOU ZERO',
+  'FLOOR IS LAVA',
+  'CLASSIC MOVE',
+  'NOT EVEN CLOSE',
+  'ALMOST - NOT REALLY',
+  'YIKES',
+  'THAT HAPPENED',
+  'CERTIFIED DISASTER',
+  'SHOCKING',
+  'TRULY SHOCKING',
+  'MAYBE NEXT TIME',
+  'WOMP WOMP',
+  'EMBARRASSING',
+  'DELIGHTFULLY BAD',
+  'YOUR FAULT',
+  'ENTIRELY YOUR FAULT',
+  'TRAGIC',
+  'ACTUALLY LAUGHING',
+  'INCREDIBLE FUMBLE',
+  'FELL DOWN A HOLE',
+  'VERY NORMAL',
+  'TOTALLY FINE',
+  'DEFINITELY FINE',
+  'SKILL NOT FOUND',
+  'TALENT MISSING',
+  'GROUND FOUND',
+  'VOID DISCOVERED',
+  'CONGRATS ON DYING',
+  'SPEEDRUN - DYING',
+  'MARIO IS ASHAMED',
+  'FELL WITH STYLE',
+  'LANDED BADLY',
+  'GRAVITY SAID NO',
+  'PLATFORM SAID BYE',
+  'FLOOR SAID HI',
+  'THAT WAS ROUGH',
+  'LOOK WHERE YOU JUMP',
+  'EYES OPEN NEXT TIME',
+  'JUST A SUGGESTION',
+  'UNBELIEVABLE',
+  'TOTALLY BELIEVABLE',
+  'ANOTHER ONE',
+  'KEEP GOING CHAMP',
+  'GETTING GOOD AT DYING',
+  'PERFECT DEATH',
+  'FLAWLESS FAILURE',
+  'PRISTINE DISASTER',
+  'STILL FALLING',
+  'ALWAYS FALLING',
+  'TOUCHED THE VOID',
+  'BECAME THE VOID',
+  'PLATFORM SAID NO',
+  'GRAVITY WINS AGAIN',
+  'PEAK GAMING',
+  'SOMETHING WENT WRONG',
+  'IMPRESSIVELY BAD',
+  'IMPRESSIVELY DEAD',
+  'GREAT JUMP - NOT',
+  'NEVER HAD IT',
+  'NEVER WILL',
+  'KEEP TRYING BUDDY',
+  'BUDDY FELL AGAIN',
+  'MASSIVE L',
+  'HISTORIC L',
+  'FELL INTO THE ABYSS',
+  'ABYSS WINS',
+  'TOUCHED A SPIKE',
+  'SPIKE WINS',
+  'PLATFORM WENT POOF',
+  'YOU WENT POOF',
+  'VERY UNFORTUNATELY',
+  'CERTIFIED CLOWN',
+  'WORLD CLASS FUMBLE',
+  'STUNNING FAILURE',
+  'BREATHTAKING DEATH',
+  'OUTSTANDING FUMBLE',
+  'REMARKABLE DISASTER',
+  'EXCEPTIONAL DYING',
+  'WORLD RECORD - DYING',
+  'ZERO SURVIVORS',
+  'JUST YOU THOUGH',
+  'MOMENT OF SILENCE',
+  'BRAVELY DONE',
+  'VERY BRAVE VERY DUMB',
+  'NICE TRY CHAMP',
+  'FELL OFF AGAIN',
+  'CERTIFIED GAMER',
+  'GAMER MOMENT',
+  'ALMOST HAD IT',
+  'SPEEDRUN ANY PERCENT',
+  'OUCH',
+  'WOAH',
+  'ROUGH ONE',
+  'THAT STINGS',
+];
+
+function killPlayer() {
+  if (player.dead) return;
+  player.dead = true;
+  player.deathTimer = 0;
+  deathSfx.currentTime = 0;
+  deathSfx.play().catch(() => {});
+  // Pick a random death message
+  player.deathMsg = DEATH_MSGS[Math.floor(Math.random() * DEATH_MSGS.length)];
+  // Spawn red pixel burst particles
+  deathParticles = [];
+  const cx = player.x + player.w / 2;
+  const cy = player.y + player.h / 2;
+  for (let i = 0; i < 28; i++) {
+    const angle = (Math.PI * 2 * i) / 28 + (Math.random() - 0.5) * 0.4;
+    const speed = 0.8 + Math.random() * 2.2;
+    deathParticles.push({
+      x: cx, y: cy,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 1,
+      life: 25 + Math.floor(Math.random() * 20),
+      maxLife: 45,
+      size: 1 + Math.floor(Math.random() * 2),
+      r: 200 + Math.floor(Math.random() * 55),
+      g: Math.floor(Math.random() * 60),
+      b: Math.floor(Math.random() * 30),
+    });
+  }
+}
+
+// ─── Draw ────────────────────────────────────────────────────────────────────
+
+// ── Pixel button helper ──
+function drawBtn(btn, label, color = '#cccccc') {
+  const hovered = mouseX >= btn.x && mouseX <= btn.x + btn.w &&
+                  mouseY >= btn.y && mouseY <= btn.y + btn.h;
+  const glowT = (Math.sin(Date.now() * 0.005) + 1) / 2; // 0–1 pulse
+
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(btn.x + 2, btn.y + 2, btn.w, btn.h);
+  // body
+  if (hovered) {
+    // animated gradient glow fill
+    const r = parseInt(color.slice(1,3)||'cc',16);
+    const g = parseInt(color.slice(3,5)||'cc',16);
+    const b = parseInt(color.slice(5,7)||'cc',16);
+    const alpha = 0.12 + glowT * 0.18;
+    ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+  } else {
+    ctx.fillStyle = '#1a1a2e';
+  }
+  ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+  // border — brighter when hovered
+  if (hovered) {
+    const pulse = 0.6 + glowT * 0.4;
+    ctx.fillStyle = color;
+    ctx.globalAlpha = pulse;
+    // outer glow rect
+    ctx.fillStyle = color;
+    ctx.fillRect(btn.x - 1, btn.y - 1, btn.w + 2, 1);
+    ctx.fillRect(btn.x - 1, btn.y + btn.h, btn.w + 2, 1);
+    ctx.fillRect(btn.x - 1, btn.y, 1, btn.h);
+    ctx.fillRect(btn.x + btn.w, btn.y, 1, btn.h);
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = color;
+  ctx.fillRect(btn.x, btn.y, btn.w, 1);
+  ctx.fillRect(btn.x, btn.y + btn.h - 1, btn.w, 1);
+  ctx.fillRect(btn.x, btn.y, 1, btn.h);
+  ctx.fillRect(btn.x + btn.w - 1, btn.y, 1, btn.h);
+  // label
+  const lw = textWidth(label, 1);
+  drawText(label, btn.x + Math.floor((btn.w - lw) / 2), btn.y + Math.floor((btn.h - 5) / 2), hovered ? '#ffffff' : color, 1);
+}
+
+// ── Pixel trophy (11x13) ──
+function drawTrophy(x, y) {
+  const t = [
+    [0,1,1,1,1,1,1,1,1,1,0],
+    [0,1,0,0,0,0,0,0,0,1,0],
+    [1,1,0,0,0,0,0,0,0,1,1],
+    [1,1,0,0,0,0,0,0,0,1,1],
+    [0,1,1,0,0,0,0,0,1,1,0],
+    [0,0,1,1,0,0,0,1,1,0,0],
+    [0,0,0,1,1,1,1,1,0,0,0],
+    [0,0,0,0,1,1,1,0,0,0,0],
+    [0,0,0,0,1,1,1,0,0,0,0],
+    [0,0,0,1,1,1,1,1,0,0,0],
+    [0,0,0,1,0,0,0,1,0,0,0],
+    [0,0,1,1,1,1,1,1,1,0,0],
+    [0,0,1,1,1,1,1,1,1,0,0],
+  ];
+  const gold = ['#ffd700','#ffaa00','#ffcc44'];
+  for (let r = 0; r < t.length; r++) {
+    for (let c = 0; c < t[r].length; c++) {
+      if (!t[r][c]) continue;
+      ctx.fillStyle = gold[(r + c) % 3];
+      ctx.fillRect(x + c, y + r, 1, 1);
+    }
+  }
+}
+
+// ── 3D RAGEBAIT title ──
+function drawRagebaitTitle(cx, y) {
+  const letters = 'RAGEBAIT';
+  const BIG = 3;
+  const charW = 4 * BIG;
+  const totalW = letters.length * charW;
+  const startX = cx - Math.floor(totalW / 2);
+  const t = Date.now() * 0.0015; // shine sweep speed
+
+  // Blue→purple palette for gradient
+  // col position 0..totalW maps to hue 200 (blue) → 280 (purple)
+  // Shine: a bright white band sweeps left to right
+  const shinePos = ((t % (Math.PI * 2)) / (Math.PI * 2)) * (totalW + 40) - 20;
+
+  // 3D shadow layers — deep indigo
+  for (let depth = 5; depth >= 1; depth--) {
+    const shade = Math.floor(10 + depth * 6);
+    ctx.fillStyle = `rgb(${shade},0,${shade * 3})`;
+    let lx = startX;
+    for (const ch of letters) {
+      const g = FONT[ch];
+      if (g) {
+        for (let r = 0; r < g.length; r++)
+          for (let c = 0; c < g[r].length; c++)
+            if (g[r][c]) ctx.fillRect(lx + c * BIG + depth, y + r * BIG + depth, BIG, BIG);
+      }
+      lx += charW;
+    }
+  }
+
+  // Main face — blue→purple gradient per column + shine sweep
+  let lx = startX;
+  for (const ch of letters) {
+    const g = FONT[ch];
+    if (g) {
+      for (let r = 0; r < g.length; r++) {
+        for (let c = 0; c < g[r].length; c++) {
+          if (!g[r][c]) continue;
+          const worldX = lx + c * BIG - startX; // 0..totalW
+          const colT = worldX / totalW;           // 0=blue, 1=purple
+          // base color: blue(0,120,255) → purple(160,0,255)
+          const br = Math.round(colT * 160);
+          const bg = Math.round(120 * (1 - colT));
+          const bb = 255;
+          // shine band: gaussian-ish brightness boost
+          const dist = Math.abs(worldX - shinePos);
+          const shine = Math.max(0, 1 - dist / 14);
+          const fr = Math.min(255, br + Math.round(shine * (255 - br)));
+          const fg = Math.min(255, bg + Math.round(shine * (255 - bg)));
+          const fb = 255;
+          ctx.fillStyle = `rgb(${fr},${fg},${fb})`;
+          ctx.fillRect(lx + c * BIG, y + r * BIG, BIG, BIG);
+        }
+      }
+      // top highlight
+      ctx.fillStyle = 'rgba(200,180,255,0.45)';
+      for (let c = 0; c < g[0].length; c++)
+        if (g[0][c]) ctx.fillRect(lx + c * BIG, y, BIG, 1);
+    }
+    lx += charW;
+  }
+}
+
+// ── Menu screen ──
+function drawMenu() {
+  // Sky bg
+  ctx.fillStyle = '#06020e';
+  ctx.fillRect(0, 0, W, H + BRAND_H);
+
+  // Stars
+  if (bgDecor) {
+    for (const d of bgDecor) {
+      if (d.type !== 'star') continue;
+      const alpha = d.b * (0.5 + 0.3 * Math.sin(Date.now() * 0.0008 + d.x));
+      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+      ctx.fillRect(Math.round(d.x % W), Math.round(d.y % (H * 0.7)), d.s, d.s);
+    }
+  }
+
+  // 3D title
+  drawRagebaitTitle(W / 2, 38);
+
+  // Subtitle
+  const sub = 'A PLATFORMER THAT HATES YOU';
+  drawText(sub, Math.floor((W - sub.length * 4) / 2), 100, '#884400', 1);
+
+  // Buttons
+  drawBtn(BTN_PLAY, 'PLAY', '#44ff88');
+  // Trophy icon left of RECORDS label
+  drawBtn(BTN_REC, '      RECORDS', '#ffdd44');
+  drawTrophy(BTN_REC.x + 3, BTN_REC.y + 1);
+  if (menuStarted) {
+    drawBtn(BTN_RESET, 'RESET', '#ff6644');
+    const note = 'RESETS LEVEL  KEEPS RECORDS';
+    drawText(note, Math.floor((W - note.length * 4) / 2), 216, '#553322', 1);
+  }
+
+  // ESC hint if in-game
+  if (menuStarted) {
+    drawText('ESC TO RETURN HERE ANYTIME', Math.floor((W - 26 * 4) / 2), 228, '#333355', 1);
+  }
+
+  drawBrand();
+}
+
+// ── Records screen ──
+function drawRecords() {
+  ctx.fillStyle = '#06020e';
+  ctx.fillRect(0, 0, W, H + BRAND_H);
+
+  // Title
+  drawTrophy(W / 2 - 70, 10);
+  drawText('RECORDS', W / 2 - 14, 12, '#ffdd44', 1);
+
+  const records = loadRecords();
+  const recKeys = Object.keys(records).map(Number).sort((a, b) => a - b);
+
+  if (recKeys.length === 0) {
+    drawText('NO RECORDS YET', W / 2 - 28, H / 2 - 4, '#555566', 1);
+  } else {
+    // Header
+    drawText('LVL  BEST TIME  MIN DEATHS', 20, 32, '#666688', 1);
+    ctx.fillStyle = 'rgba(100,80,180,0.3)';
+    ctx.fillRect(18, 30, W - 36, 1);
+
+    let ry = 42;
+    for (const lvl of recKeys) {
+      if (ry > H - 20) break;
+      const rec = records[lvl];
+      const timeStr = rec.bestMs !== null ? formatTime(rec.bestMs) : '--:--:--';
+      const deathStr = rec.minDeaths !== null ? String(rec.minDeaths) : '-';
+      const row = `L${lvl < 10 ? ' ' + lvl : lvl}   ${timeStr}   ${deathStr}`;
+      const hue = (lvl * 37) % 360;
+      drawText(row, 20, ry, `hsl(${hue},60%,65%)`, 1);
+      ry += 10;
+    }
+  }
+
+  drawBtn(BTN_BACK, 'BACK', '#aaaacc');
+  drawBrand();
+}
+
+function draw() {
+  if (gameState === 'menu')    { drawMenu();    return; }
+  if (gameState === 'records') { drawRecords(); return; }
+
+  // Sky gradient bands
+  const bands = 8;
+  const bandH = Math.ceil(H / bands);
+  const skyColors = [
+    [8,4,28],[12,6,40],[18,8,52],
+    [10,5,35],[6,3,22],[4,2,16],
+    [2,1,10],[1,1,5],
+  ];
+  for (let i = 0; i < bands; i++) {
+    const c = skyColors[i];
+    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+    ctx.fillRect(0, i * bandH, W, bandH);
+  }
+
+  ctx.save();
+  ctx.translate(-Math.round(camera.x), 0);
+
+  // ── Background decorations ──
+  if (bgDecor) {
+    for (const d of bgDecor) {
+      if (d.type === 'star') {
+        const alpha = d.b * (0.6 + 0.4 * Math.sin(Date.now() * 0.0008 + d.x));
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+        ctx.fillRect(Math.round(d.x), Math.round(d.y), d.s, d.s);
+      } else if (d.type === 'moon') {
+        drawMoon(d.x, d.y);
+      } else if (d.type === 'tree') {
+        drawTree(Math.round(d.x), Math.round(d.y));
+      }
+    }
+  }
+
+  // ── Platforms ──
+  for (const p of platforms) {
+    if (p.broken) continue;
+
+    const isWobbleType = p.type === 'wobble' || p.type === 'shakewobble' || p.type === 'flipwobble';
+    const isFlipType   = p.type === 'flip'   || p.type === 'flipwobble';
+    const wobbleOff = (isWobbleType && p.crumbling)
+      ? Math.sin(p.wobbleTimer * 0.4) * p.wobbleAmp : 0;
+    const sx = p.shakeX || 0;
+    const sy = p.shakeY || 0;
+
+    const px = Math.round(p.x + wobbleOff + sx);
+    const py = Math.round(p.y + sy);
+    const pw = p.w;
+
+    // ── Flip / flipwobble ──
+    if (isFlipType) {
+      const flashOn = Math.floor(Date.now() / 150) % 2 === 0;
+      // flipwobble: orange-purple mix; flip: purple
+      if (p.type === 'flipwobble') {
+        ctx.fillStyle = p.flipped
+          ? (flashOn ? '#dd5522' : '#882200')
+          : (flashOn ? '#cc44cc' : '#882288');
+      } else {
+        ctx.fillStyle = p.flipped ? (flashOn ? '#cc44cc' : '#882288') : '#aa44dd';
+      }
+      ctx.fillRect(px, py, pw, TILE);
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.fillRect(px, py, pw, 1);
+      drawSpikes(px, py, pw, p.flipped ? 'top' : 'bottom');
+      continue;
+    }
+
+    // ── Countdown tile ──
+    if (p.type === 'countdown') {
+      // Color shifts green→yellow→red based on hits remaining vs original
+      const maxHits = Math.max(p.countdownHits, 1);
+      // We don't store original, so use countdownHits directly: 3=green,2=yellow,1=red
+      const t = (p.countdownHits - 1) / 2; // 1→0, 2→0.5, 3→1
+      const cr = Math.round(40  + (215) * (1 - t));
+      const cg = Math.round(180 * t);
+      const cb = 20;
+      ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+      ctx.fillRect(px, py, pw, TILE);
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fillRect(px, py, pw, 1);
+      // Draw the number centered on the tile using pixel font
+      const numStr = String(p.countdownHits);
+      const numX = px + Math.floor((pw - numStr.length * 4) / 2);
+      const numY = py + 2;
+      drawText(numStr, numX, numY, '#ffffff', 1);
+      continue;
+    }
+
+    // ── Wobble / shakewobble crumble color ──
+    if (isWobbleType && p.crumbling) {
+      const flash = Math.floor(p.crumbleTimer / 8) % 2 === 0;
+      ctx.fillStyle = flash
+        ? `rgb(${p.color[0]},${p.color[1]},${p.color[2]})`
+        : `rgb(${Math.min(255,p.color[0]+80)},${p.color[1]},${p.color[2]})`;
+    } else if (p.type === 'goal') {
+      const pulse = Math.floor(Date.now() / 200) % 2 === 0;
+      ctx.fillStyle = pulse ? '#ffff44' : '#aaaa00';
+    } else if (p.type === 'shakemove') {
+      // teal-blue shimmer
+      const shimmer = Math.floor(Date.now() / 120) % 2 === 0;
+      ctx.fillStyle = shimmer ? `rgb(${p.color[0]},${p.color[1]},${p.color[2]})` : `rgb(${p.color[0]-20},${p.color[1]+20},${p.color[2]})`;
+    } else {
+      ctx.fillStyle = `rgb(${p.color[0]},${p.color[1]},${p.color[2]})`;
+    }
+
+    for (let tx = 0; tx < pw; tx += TILE) {
+      const tw = Math.min(TILE, pw - tx);
+      ctx.fillRect(px + tx, py, tw, TILE);
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fillRect(px + tx, py, tw, 1);
+      // restore color
+      if (isWobbleType && p.crumbling) {
+        const flash = Math.floor(p.crumbleTimer / 8) % 2 === 0;
+        ctx.fillStyle = flash
+          ? `rgb(${p.color[0]},${p.color[1]},${p.color[2]})`
+          : `rgb(${Math.min(255,p.color[0]+80)},${p.color[1]},${p.color[2]})`;
+      } else if (p.type === 'goal') {
+        const pulse = Math.floor(Date.now() / 200) % 2 === 0;
+        ctx.fillStyle = pulse ? '#ffff44' : '#aaaa00';
+      } else if (p.type === 'shakemove') {
+        const shimmer = Math.floor(Date.now() / 120) % 2 === 0;
+        ctx.fillStyle = shimmer ? `rgb(${p.color[0]},${p.color[1]},${p.color[2]})` : `rgb(${p.color[0]-20},${p.color[1]+20},${p.color[2]})`;
+      } else {
+        ctx.fillStyle = `rgb(${p.color[0]},${p.color[1]},${p.color[2]})`;
+      }
+    }
+
+    // Moving / shakemove arrows
+    if (p.type === 'moving' || p.type === 'shakemove') {
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      if (p.moveAxis === 'y') {
+        ctx.fillRect(px + Math.floor(pw/2) - 1, py + 2, 2, 2);
+        ctx.fillRect(px + Math.floor(pw/2) - 1, py + 5, 2, 2);
+      } else {
+        ctx.fillRect(px + 2, py + 2, 2, 2);
+        ctx.fillRect(px + pw - 4, py + 2, 2, 2);
+      }
+    }
+
+    // Spikes on spike platforms
+    if (p.hasSpikes) drawSpikes(px, py, pw, 'top');
+
+    // Respawning ghost — faint outline while broken timer is running
+    // (handled below after loop)
+  }
+
+  // Ghost outlines for respawning platforms
+  for (const p of platforms) {
+    if (!p.broken) continue;
+    const isWobbleType = p.type === 'wobble' || p.type === 'shakewobble' || p.type === 'flipwobble';
+    if (!isWobbleType) continue;    const alpha = 0.15 + 0.15 * Math.sin(Date.now() * 0.01);
+    ctx.fillStyle = `rgba(${p.color[0]},${p.color[1]},${p.color[2]},${alpha})`;
+    ctx.fillRect(Math.round(p.originX), Math.round(p.originY), p.w, TILE);
+  }
+
+  // ── Double-jump orbs ──
+  if (orbs) {
+    for (const orb of orbs) {
+      orb.pulse += 0.08;
+      if (orb.shineTimer > 0) orb.shineTimer--;
+
+      const ox = Math.round(orb.x);
+      const oy = Math.round(orb.y);
+
+      if (orb.shineTimer > 0) {
+        // Shine burst: expanding white/cyan rays + flash
+        const t = 1 - orb.shineTimer / 20; // 0→1 as it fades
+        const radius = Math.round(4 + t * 14);
+        const alpha  = 1 - t;
+        // expanding ring
+        ctx.fillStyle = `rgba(180,255,240,${alpha * 0.6})`;
+        ctx.fillRect(ox + 3 - radius, oy + 3 - radius, radius * 2, 1);
+        ctx.fillRect(ox + 3 - radius, oy + 3 + radius, radius * 2, 1);
+        ctx.fillRect(ox + 3 - radius, oy + 3 - radius, 1, radius * 2);
+        ctx.fillRect(ox + 3 + radius, oy + 3 - radius, 1, radius * 2);
+        // cross sparkle rays
+        ctx.fillStyle = `rgba(255,255,255,${alpha * 0.9})`;
+        ctx.fillRect(ox + 3 - radius, oy + 3, radius * 2, 1);
+        ctx.fillRect(ox + 3, oy + 3 - radius, 1, radius * 2);
+        // diagonal rays
+        ctx.fillStyle = `rgba(180,255,240,${alpha * 0.5})`;
+        const dr = Math.round(radius * 0.7);
+        ctx.fillRect(ox + 3 - dr, oy + 3 - dr, 2, 2);
+        ctx.fillRect(ox + 3 + dr - 1, oy + 3 - dr, 2, 2);
+        ctx.fillRect(ox + 3 - dr, oy + 3 + dr - 1, 2, 2);
+        ctx.fillRect(ox + 3 + dr - 1, oy + 3 + dr - 1, 2, 2);
+        // bright core flash
+        ctx.fillStyle = `rgba(255,255,255,${alpha * 0.95})`;
+        ctx.fillRect(ox + 1, oy + 1, 5, 5);
+      } else {
+        // Normal idle orb
+        const glow = 0.4 + 0.3 * Math.sin(orb.pulse);
+        ctx.fillStyle = `rgba(80,255,220,${glow * 0.2})`;
+        ctx.fillRect(ox - 7, oy - 7, 20, 20);
+        ctx.fillStyle = `rgba(80,255,220,${glow * 0.45})`;
+        ctx.fillRect(ox - 4, oy - 4, 14, 14);
+        const core = [
+          [0,0,1,1,1,0,0],
+          [0,1,1,1,1,1,0],
+          [1,1,1,1,1,1,1],
+          [1,1,1,1,1,1,1],
+          [1,1,1,1,1,1,1],
+          [0,1,1,1,1,1,0],
+          [0,0,1,1,1,0,0],
+        ];
+        for (let r = 0; r < core.length; r++) {
+          for (let c = 0; c < core[r].length; c++) {
+            if (!core[r][c]) continue;
+            const bright = (r <= 1 && c >= 2 && c <= 4) ? 255 : 180;
+            ctx.fillStyle = `rgb(${bright},255,220)`;
+            ctx.fillRect(ox + c, oy + r, 1, 1);
+          }
+        }
+      }
+    }
+  }
+
+  // ── Player ──
+  if (player && !player.dead) {
+    const px = Math.round(player.x);
+    const py = Math.round(player.y);
+    const blink = player.blinkTimer % 60 < 4;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(px + 1, py + player.h, player.w - 2, 2);
+
+    ctx.fillStyle = '#e8e8ff';
+    ctx.fillRect(px, py + 2, player.w, player.h - 2);
+
+    ctx.fillStyle = '#ffffcc';
+    ctx.fillRect(px + 1, py, player.w - 2, 4);
+
+    ctx.fillStyle = '#222';
+    if (!blink) {
+      const eyeX = player.facingRight ? px + 3 : px + 1;
+      ctx.fillRect(eyeX, py + 1, 1, 1);
+    }
+
+    const legAnim = Math.floor(player.blinkTimer / 6) % 2;
+    ctx.fillStyle = '#8888cc';
+    if (player.onGround && Math.abs(player.vx) > 0.2) {
+      ctx.fillRect(px + 1, py + player.h - 1, 2, 2);
+      ctx.fillRect(px + player.w - 3, py + player.h - 1 + legAnim, 2, 2);
+    } else {
+      ctx.fillRect(px + 1, py + player.h - 1, 2, 2);
+      ctx.fillRect(px + player.w - 3, py + player.h - 1, 2, 2);
+    }
+  }
+
+  ctx.restore();
+
+  // ── Death particles (world-space, drawn after restore) ──
+  if (deathParticles && deathParticles.length > 0) {
+    ctx.save();
+    ctx.translate(-Math.round(camera.x), 0);
+    for (const p of deathParticles) {
+      if (p.life <= 0) continue;
+      const alpha = p.life / p.maxLife;
+      ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${alpha})`;
+      ctx.fillRect(Math.round(p.x), Math.round(p.y), p.size, p.size);
+    }
+    ctx.restore();
+  }
+
+  // ── HUD (all pixel font, inside canvas) ──
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(2, 2, 38, 9);
+  ctx.fillRect(W - 50, 2, 48, 9);
+
+  drawText(`LV ${level}`, 4, 3, '#ffff88', 1);
+
+  // Skull icon then death count
+  drawSkull(W - 48, 3);
+  drawText(`${deaths}`, W - 36, 3, '#ff8888', 1);
+
+  // Speedrun timer — center top
+  const timeStr = formatTime(getElapsedMs());
+  const timerW  = timeStr.length * 4;
+  const timerX  = Math.floor((W - timerW) / 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(timerX - 2, 2, timerW + 4, 9);
+  drawText(timeStr, timerX, 3, timerRunning ? '#aaffaa' : '#666666', 1);
+
+  if (player && player.dead) {
+    // Only show overlay after particle burst settles
+    if (player.deathTimer > 20) {
+      const overlayAlpha = Math.min((player.deathTimer - 20) / 20, 0.65);
+      ctx.fillStyle = `rgba(0,0,0,${overlayAlpha})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (player.deathTimer > 30) {
+      if (player.deathMsg) {
+        const msg = player.deathMsg;
+        const mw  = textWidth(msg, 1);
+        const mx  = Math.floor((W - mw) / 2);
+        drawText(msg, mx, H / 2 - 26, '#ffffff', 1);
+      }
+      const ydw = textWidth('YOU DIED', 2);
+      drawText('YOU DIED', Math.floor((W - ydw) / 2), H / 2 - 14, '#ff4444', 2);
+    }
+    if (player.deathTimer > 60) {
+      const blink = Math.floor(Date.now() / 400) % 2 === 0;
+      if (blink) drawText('PRESS SPACE', W / 2 - 22, H / 2 + 10, '#ffffff', 1);
+    }
+  }
+
+  if (level === 1 && player && !player.dead) {
+    const pulse = Math.floor(Date.now() / 500) % 2 === 0;
+    if (pulse) drawText('REACH THE GOLD!', 4, H - 12, '#ffff44', 1);
+  }
+
+  // ── Brand strip ──
+  ctx.fillStyle = 'rgb(6,2,14)';
+  ctx.fillRect(0, H, W, BRAND_H);
+  drawBrand();
+}
+
+// ─── Loop ────────────────────────────────────────────────────────────────────
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+// Generate menu bg stars
+const menuRng = mulberry32(12345);
+bgDecor = [];
+for (let i = 0; i < 80; i++) {
+  bgDecor.push({
+    type: 'star',
+    x: menuRng() * W,
+    y: menuRng() * H * 0.85,
+    s: menuRng() > 0.75 ? 2 : 1,
+    b: 0.3 + menuRng() * 0.7,
+  });
+}
+
+// Restore progress indicator for menu
+if (hasSavedProgress()) menuStarted = true;
+
+loop();
+</script>
+</body>
+</html>
