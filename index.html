@@ -32,6 +32,8 @@
       pointer-events: none;
     }
     #touch-controls.active { display: flex; }
+
+    /* ── Portrait touch buttons ── */
     .touch-btn {
       position: absolute;
       bottom: 16px;
@@ -74,18 +76,20 @@
       background: rgba(80,200,120,0.35);
       border-color: rgba(80,200,120,0.9);
     }
+
+    /* ── Back / menu button — 3× bigger ── */
     #btn-back-mobile {
       position: fixed;
       top: 10px;
       left: 10px;
-      width: 200px;
-      height: 60px;
-      border-radius: 14px;
-      background: rgba(0,0,0,0.55);
-      border: 2px solid rgba(255,255,255,0.3);
-      color: rgba(255,255,255,0.85);
+      width: 220px;
+      height: 80px;
+      border-radius: 18px;
+      background: rgba(0,0,0,0.6);
+      border: 3px solid rgba(255,255,255,0.35);
+      color: rgba(255,255,255,0.9);
       font-family: monospace;
-      font-size: 18px;
+      font-size: 24px;
       display: none;
       align-items: center;
       justify-content: center;
@@ -96,15 +100,61 @@
     }
     #btn-back-mobile.active { display: flex; }
 
-    /* Landscape: controls shrink to fit beside canvas */
-    @media (orientation: landscape) and (max-height: 500px) {
-      #touch-controls { height: 100vh; width: 220px; right: 0; left: auto; }
-      .touch-btn { width: 90px; height: 90px; font-size: 36px; border-radius: 14px; bottom: auto; }
-      #btn-left  { left: 8px;  top: 50%; transform: translateY(-110%); }
-      #btn-right { left: 108px; top: 50%; transform: translateY(-110%); }
-      #btn-jump  { right: 8px; left: auto; top: 50%; transform: translateY(-50%);
-                   width: 100px; height: 100px; font-size: 14px; border-radius: 50%; }
-      #btn-back-mobile { width: 90px; height: 44px; font-size: 13px; }
+    /* ── Landscape: canvas fills full height, arrows LEFT, jump RIGHT ── */
+    @media (orientation: landscape) and (max-height: 520px) {
+      body { justify-content: center; align-items: center; }
+
+      /* Controls panel spans full screen height on each side */
+      #touch-controls {
+        height: 100vh;
+        width: 100vw;
+        bottom: 0;
+        left: 0;
+      }
+
+      /* All buttons: medium size, vertically centered */
+      .touch-btn {
+        width: 110px;
+        height: 110px;
+        font-size: 44px;
+        border-radius: 18px;
+        bottom: auto;
+      }
+
+      /* Left arrow — left side, upper center */
+      #btn-left {
+        left: 12px;
+        top: 50%;
+        transform: translateY(-120%);
+      }
+      /* Right arrow — left side, lower center */
+      #btn-right {
+        left: 134px;
+        top: 50%;
+        transform: translateY(-120%);
+      }
+      /* Jump — right side, vertically centered */
+      #btn-jump {
+        right: 12px;
+        left: auto;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 130px;
+        height: 130px;
+        font-size: 16px;
+        border-radius: 50%;
+      }
+
+      /* Back button — top right in landscape */
+      #btn-back-mobile {
+        top: 8px;
+        left: auto;
+        right: 160px;
+        width: 130px;
+        height: 50px;
+        font-size: 15px;
+        border-radius: 12px;
+      }
     }
   </style>
 </head>
@@ -173,23 +223,33 @@ const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) |
                   (navigator.maxTouchPoints > 1 && window.innerWidth < 900);
 
 function resizeCanvas() {
-  const isLandscape = window.innerWidth > window.innerHeight;
-  let ctrlH, ctrlW;
-  if (IS_MOBILE && isLandscape) {
-    // Landscape: controls are on the right side, not bottom
-    ctrlW = 220;
-    ctrlH = 0;
+  const isLandscape = IS_MOBILE && window.innerWidth > window.innerHeight;
+
+  let availW, availH;
+  if (isLandscape) {
+    // Landscape: canvas fills full screen — controls overlay on sides
+    // Reserve ~160px each side for arrow buttons (left) and jump (right)
+    const sideReserve = 160;
+    availW = window.innerWidth  - sideReserve * 2;
+    availH = window.innerHeight; // full height, top to bottom
   } else if (IS_MOBILE) {
-    // Portrait: controls at bottom
-    ctrlW = 0;
-    ctrlH = Math.round(window.innerHeight * 0.40);
+    // Portrait: reserve bottom for controls
+    availW = window.innerWidth;
+    availH = window.innerHeight - Math.round(window.innerHeight * 0.40);
   } else {
-    ctrlW = 0;
-    ctrlH = 0;
+    availW = window.innerWidth;
+    availH = window.innerHeight;
   }
-  const availW = window.innerWidth  - ctrlW;
-  const availH = window.innerHeight - ctrlH;
-  const scale  = Math.max(1, Math.floor(Math.min(availW / W, availH / (H + BRAND_H))));
+
+  // Use fractional scale in landscape for perfect fit, floor otherwise
+  let scale;
+  if (isLandscape) {
+    scale = Math.max(1, Math.min(availW / W, availH / (H + BRAND_H)));
+    scale = Math.round(scale * 10) / 10; // round to 1 decimal for crispness
+  } else {
+    scale = Math.max(1, Math.floor(Math.min(availW / W, availH / (H + BRAND_H))));
+  }
+
   canvas.style.width  = W * scale + 'px';
   canvas.style.height = (H + BRAND_H) * scale + 'px';
 }
