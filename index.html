@@ -34,10 +34,10 @@
     #touch-controls.active { display: flex; }
     .touch-btn {
       position: absolute;
-      bottom: 18px;
-      width: 110px;
-      height: 110px;
-      border-radius: 14px;
+      bottom: 20px;
+      width: 140px;
+      height: 140px;
+      border-radius: 18px;
       background: rgba(255,255,255,0.1);
       border: 3px solid rgba(255,255,255,0.25);
       display: flex;
@@ -46,7 +46,7 @@
       pointer-events: all;
       -webkit-tap-highlight-color: transparent;
       touch-action: none;
-      font-size: 44px;
+      font-size: 56px;
       color: rgba(255,255,255,0.55);
       transition: background 0.05s;
       user-select: none;
@@ -56,17 +56,17 @@
       border-color: rgba(255,255,255,0.6);
       color: rgba(255,255,255,0.95);
     }
-    #btn-left  { left: 18px; }
-    #btn-right { left: 148px; }
+    #btn-left  { left: 16px; }
+    #btn-right { left: 172px; }
     #btn-jump  {
-      right: 18px;
-      width: 120px;
-      height: 120px;
+      right: 16px;
+      width: 150px;
+      height: 150px;
       border-radius: 50%;
       background: rgba(80,200,120,0.14);
       border-color: rgba(80,200,120,0.4);
       color: rgba(80,200,120,0.75);
-      font-size: 20px;
+      font-size: 22px;
       font-family: monospace;
       letter-spacing: 1px;
     }
@@ -74,6 +74,27 @@
       background: rgba(80,200,120,0.35);
       border-color: rgba(80,200,120,0.9);
     }
+    #btn-back-mobile {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      width: 80px;
+      height: 44px;
+      border-radius: 10px;
+      background: rgba(0,0,0,0.5);
+      border: 2px solid rgba(255,255,255,0.3);
+      color: rgba(255,255,255,0.8);
+      font-family: monospace;
+      font-size: 13px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      pointer-events: all;
+      touch-action: none;
+      z-index: 100;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #btn-back-mobile.active { display: flex; }
   </style>
 </head>
 <body>
@@ -83,6 +104,7 @@
   <div class="touch-btn" id="btn-right">▶</div>
   <div class="touch-btn" id="btn-jump">JUMP</div>
 </div>
+<div id="btn-back-mobile">◀ MENU</div>
 
 <script>
 // ─── Audio ───────────────────────────────────────────────────────────────────
@@ -103,11 +125,17 @@ const jumpSfx  = new Audio('jump.mp3');
 const winSfx   = new Audio('win.mp3');
 const clickSfx = new Audio('click.mp3');
 clickSfx.volume = 0.6;
-jumpSfx.volume = 0.5;
+jumpSfx.volume = 0.25;
 bgMusic.volume = 0.4;
 
 bgMusic.addEventListener('ended', () => {
-  // Loop the current track
+  if (gameMode === 'infinite') {
+    // Cycle through all level tracks for infinite mode
+    if (!bgMusic._infIdx) bgMusic._infIdx = 0;
+    bgMusic._infIdx = (bgMusic._infIdx + 1) % LEVEL_TRACKS.length;
+    currentTrackSrc = LEVEL_TRACKS[bgMusic._infIdx];
+    bgMusic.src = currentTrackSrc;
+  }
   bgMusic.play().catch(() => {});
 });
 
@@ -134,7 +162,7 @@ const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) |
                   (navigator.maxTouchPoints > 1 && window.innerWidth < 900);
 
 // On mobile, leave room below canvas for touch controls
-const CTRL_H = IS_MOBILE ? Math.round(window.innerHeight * 0.30) : 0;
+const CTRL_H = IS_MOBILE ? Math.round(window.innerHeight * 0.35) : 0;
 const availH  = window.innerHeight - CTRL_H;
 // Same scale logic on all devices — fit canvas to available space
 const SCALE   = Math.max(1, Math.floor(Math.min(window.innerWidth / W, availH / (H + BRAND_H))));
@@ -179,6 +207,16 @@ if (IS_MOBILE) {
 
   bindTouchBtn('btn-left',  'ArrowLeft');
   bindTouchBtn('btn-right', 'ArrowRight');
+
+  // Mobile back button
+  const backMobileEl = document.getElementById('btn-back-mobile');
+  backMobileEl.classList.add('active');
+  backMobileEl.addEventListener('touchstart', e => {
+    e.preventDefault();
+    playClick();
+    if (gameState === 'playing') { saveProgress(); startTransition('out', null, () => { gameState = 'menu'; menuStarted = true; setMusicTrack('title.mp3'); }); }
+    else if (gameState === 'records' || gameState === 'endscreen') { startTransition('out', null, () => { gameState = 'menu'; setMusicTrack('title.mp3'); }); }
+  }, { passive: false });
 
   // Jump button: sets space key AND handles death respawn
   const jumpEl = document.getElementById('btn-jump');
@@ -225,7 +263,7 @@ const BTN_MODE = { x: W - 52, y: 4, w: 50, h: 11 }; // top-right of menu
 // Hard mode state
 let hardTimer    = 0;      // ms remaining (hard/hardcore)
 let hardActive   = false;
-const HARD_TIME  = 60 * 60 * 1000; // 60 minutes
+const HARD_TIME  = 100 * 60 * 1000; // 100 minutes
 const HARD_DEATH_PENALTY = 5000;   // +5s per death
 
 // Hardcore state
@@ -238,10 +276,9 @@ let infinitePlatsSeen = new Set();
 let infiniteBiomeOverride = null;
 
 // ─── Boss level ghost ─────────────────────────────────────────────────────────
-let ghostRecording  = [];   // [{x,y,facingRight}] recorded last run
-let ghostPlayback   = [];   // copy used for current boss level
-let ghostFrame      = 0;
-let ghostHeadstart  = 180;  // 3s @ 60fps before ghost starts
+// Ghost chases player's position from 3 seconds ago (432 DT units at 144fps)
+const GHOST_DELAY = 432;
+let ghostBuffer     = [];   // rolling buffer of recent positions
 let ghostActive     = false;
 let ghostPos        = { x: 0, y: 0, facingRight: true };
 let isRecordingGhost = false;
@@ -249,21 +286,34 @@ let isRecordingGhost = false;
 function isBossLevel(lvl) { return lvl % 10 === 0 && lvl > 0; }
 
 function startGhostRecording() {
-  ghostRecording = [];
+  ghostBuffer = [];
   isRecordingGhost = true;
 }
 function tickGhostRecord() {
-  if (!isRecordingGhost || !player || player.dead) return;
-  ghostRecording.push({ x: player.x, y: player.y, facingRight: player.facingRight });
-  if (ghostRecording.length > 18000) ghostRecording.shift();
+  if (!isRecordingGhost || !player) return;
+  ghostBuffer.push({ x: player.x, y: player.y, facingRight: player.facingRight });
+  // Keep only last GHOST_DELAY + some extra frames
+  if (ghostBuffer.length > GHOST_DELAY + 60) ghostBuffer.shift();
 }
 function startGhostPlayback() {
-  if (ghostRecording.length === 0) return;
-  ghostPlayback = [...ghostRecording];
-  ghostFrame    = 0;
-  ghostHeadstart = 180;
-  ghostActive   = true;
-  ghostPos      = { ...ghostPlayback[0] };
+  ghostActive = true;
+  // Start ghost at oldest buffered position (3s behind)
+  const startIdx = Math.max(0, ghostBuffer.length - GHOST_DELAY);
+  ghostPos = ghostBuffer[startIdx] ? { ...ghostBuffer[startIdx] } : { x: 0, y: 0, facingRight: true };
+}
+function updateGhost() {
+  if (!ghostActive || !isBossLevel(level)) return;
+  // Ghost shows position from GHOST_DELAY frames ago
+  const delayedIdx = Math.max(0, ghostBuffer.length - GHOST_DELAY);
+  if (ghostBuffer[delayedIdx]) {
+    ghostPos = { ...ghostBuffer[delayedIdx] };
+  }
+  // Kill player if ghost touches them
+  if (!player || player.dead) return;
+  if (Math.abs(ghostPos.x - player.x) < player.w &&
+      Math.abs(ghostPos.y - player.y) < player.h) {
+    killPlayer();
+  }
 }
 
 // ─── Swipe transition ─────────────────────────────────────────────────────────
@@ -314,6 +364,7 @@ function saveRecords(r) {
   try { localStorage.setItem(`ragebait_records_${gameMode}`, JSON.stringify(r)); } catch {}
 }
 function recordLevelComplete(lvl, ms, deathCount) {
+  if (gameMode === 'hardcore') return; // hardcore only tracks best level reached
   const r = loadRecords();
   if (!r[lvl]) r[lvl] = { bestMs: null, minDeaths: null };
   if (r[lvl].bestMs === null || ms < r[lvl].bestMs) r[lvl].bestMs = ms;
@@ -432,12 +483,12 @@ function makePlatform(x, y, w, type, rng) {
     broken: false,
     respawnTimer: 0,
     flipTimer: Math.floor(rng() * 60),
-    flipInterval: 120,  // 2 seconds at 60fps
+    flipInterval: 144,  // 1 second at 144fps (DT-scaled)
     flipped: false,
     shakeX: 0, shakeY: 0,
     hasSpikes,
     countdownHits: 0,
-    onoffTimer: Math.floor(rng() * 120), // stagger on/off phases
+    onoffTimer: Math.floor(rng() * 144), // stagger on/off phases
     onoffOn: true,
     color: baseColor,
   };
@@ -488,7 +539,7 @@ function generateLevel(lvl) {
   let prevType = 'static'; // track previous type to avoid dangerous pairs
 
   // Types that must never appear consecutively
-  const DANGEROUS = new Set(['spikemove','flip','flipwobble','onoff']);
+  const DANGEROUS = new Set(['flip','flipwobble','onoff']);
 
   for (let i = 0; i < count; i++) {
     // Gap size scales with stage — stage 1 is small, later stages bigger
@@ -569,7 +620,6 @@ function generateLevel(lvl) {
       else if (roll2 < 0.20) type = 'slippery';
       else if (roll2 < 0.30) type = 'flip';
       else if (roll2 < 0.30 + extra * 0.12) type = 'flipwobble';
-      else if (roll2 < 0.30 + extra * 0.22) type = 'spikemove';
       // onoff from level 70+
       if (lvl >= 70 && roll2 < 0.12 + Math.min((lvl - 70) / 30, 0.15)) type = 'onoff';
     }
@@ -646,22 +696,7 @@ function generateLevel(lvl) {
       });
     }
   }
-  // Horizontal lasers (level 90+)
-  if (lvl >= 90) {
-    const hCount = 1 + Math.min(Math.floor((lvl - 90) / 5), 3);
-    for (let i = 0; i < hCount; i++) {
-      const ly = 30 + Math.floor(rng() * (H - 60));
-      lasers.push({
-        y: ly, axis: 'horizontal',
-        interval: Math.max(100, 180 - Math.floor((lvl - 90) * 1.5)),
-        warnFrames: 40,
-        timer: Math.floor(rng() * 120),
-        state: 'idle',
-        fireLength: 0,
-        maxLength: W,
-      });
-    }
-  }
+  // Horizontal lasers removed
 
   return { plats, levelWidth, orbs, lasers };
 }
@@ -674,16 +709,16 @@ function getBiome(lvl) {
 }
 
 const BIOME_SKY = {
-  night:     [[8,4,28],[12,6,40],[18,8,52],[10,5,35],[6,3,22],[4,2,16],[2,1,10],[1,1,5]],
-  day:       [[80,160,255],[100,180,255],[130,200,255],[160,215,255],[180,225,255],[200,230,255],[220,235,255],[240,245,255]],
-  beach:     [[80,180,255],[100,200,255],[130,210,255],[160,220,200],[200,210,160],[220,200,140],[210,180,120],[190,160,100]],
-  cave:      [[8,6,8],[12,10,12],[16,12,14],[14,10,12],[10,8,10],[8,6,8],[6,4,6],[4,3,4]],
-  hell:      [[60,4,4],[80,8,4],[100,12,4],[80,6,2],[60,4,2],[40,2,2],[20,1,1],[10,0,0]],
-  clouds:    [[140,180,255],[160,200,255],[180,215,255],[200,225,255],[220,235,255],[235,240,255],[245,248,255],[250,252,255]],
-  ocean:     [[4,8,30],[6,12,45],[8,18,60],[6,14,50],[4,10,35],[3,8,25],[2,5,18],[1,3,10]],
-  city:      [[10,10,20],[15,15,30],[20,18,35],[18,15,30],[14,12,25],[10,10,20],[8,8,16],[5,5,12]],
-  mountains: [[60,80,120],[80,100,140],[100,120,160],[80,100,140],[60,80,120],[40,60,100],[25,40,80],[15,25,60]],
-  space:     [[0,0,4],[2,0,8],[4,0,12],[2,0,8],[1,0,5],[0,0,3],[0,0,2],[0,0,1]],
+  night:     [[4,2,18],[8,4,28],[14,6,42],[18,8,55],[10,5,35],[5,2,20],[2,1,10],[1,0,5]],
+  day:       [[60,140,255],[80,165,255],[110,190,255],[145,210,255],[170,222,255],[195,232,255],[215,238,255],[235,245,255]],
+  beach:     [[70,170,255],[95,195,255],[125,210,255],[155,220,195],[195,208,155],[218,198,135],[208,175,115],[185,155,95]],
+  cave:      [[5,4,6],[9,7,10],[13,10,13],[11,8,11],[8,6,8],[6,4,6],[4,3,5],[3,2,3]],
+  hell:      [[55,3,3],[75,7,3],[95,11,3],[75,5,2],[55,3,2],[35,2,1],[18,1,0],[8,0,0]],
+  clouds:    [[130,175,255],[150,195,255],[172,212,255],[195,222,255],[215,232,255],[230,240,255],[242,247,255],[250,253,255]],
+  ocean:     [[3,6,28],[5,10,42],[7,16,58],[5,12,48],[3,8,33],[2,6,22],[1,4,15],[0,2,8]],
+  city:      [[8,8,18],[12,12,26],[17,15,32],[15,12,28],[11,10,22],[8,8,18],[6,6,14],[4,4,10]],
+  mountains: [[50,70,110],[70,92,132],[92,115,155],[72,95,135],[52,72,112],[35,55,95],[22,38,78],[12,22,58]],
+  space:     [[0,0,3],[1,0,7],[3,0,11],[1,0,7],[0,0,4],[0,0,2],[0,0,1],[0,0,0]],
 };
 
 // ─── Background decorations ──────────────────────────────────────────────────
@@ -692,50 +727,83 @@ function generateBgDecorForBiome(biome, levelWidth, rng) {
   const groundY = H - 30;
 
   if (biome === 'night') {
-    decor.push({ type: 'moon', x: 60, y: 30 });
-    for (let i = 0; i < 80; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * (H * 0.75), s: rng() > 0.75 ? 2 : 1, b: 0.3 + rng() * 0.7 });
-    for (let i = 0; i < Math.floor(levelWidth / 60); i++) decor.push({ type: 'tree', x: 80 + i * 55 + rng() * 30, y: groundY });
+    decor.push({ type: 'moon', x: 60, y: 28 });
+    for (let i = 0; i < 120; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * (H * 0.8), s: rng() > 0.85 ? 2 : 1, b: 0.2 + rng() * 0.8 });
+    for (let i = 0; i < 4; i++) decor.push({ type: 'shootingstar', x: rng() * levelWidth, y: 10 + rng() * 60, phase: rng() * 600, speed: 1.5 + rng() * 2 });
+    for (let i = 0; i < Math.floor(levelWidth / 45); i++) decor.push({ type: 'tree', x: 40 + i * 43 + rng() * 20, y: groundY, h: 18 + Math.floor(rng() * 14) });
+    for (let i = 0; i < 5; i++) decor.push({ type: 'bird', x: rng() * levelWidth, y: 30 + rng() * 60, phase: rng() * 200 });
+    for (let i = 0; i < Math.floor(levelWidth / 80); i++) decor.push({ type: 'hill', x: i * 78 + rng() * 20, y: groundY, w: 50 + Math.floor(rng() * 40), h: 12 + Math.floor(rng() * 10), dark: true });
   } else if (biome === 'day') {
-    decor.push({ type: 'sun', x: 60, y: 28 });
-    for (let i = 0; i < Math.floor(levelWidth / 80); i++) decor.push({ type: 'cloud', x: 40 + i * 75 + rng() * 40, y: 20 + rng() * 60, w: 20 + Math.floor(rng() * 20) });
-    for (let i = 0; i < Math.floor(levelWidth / 50); i++) decor.push({ type: 'daytree', x: 60 + i * 48 + rng() * 20, y: groundY });
+    decor.push({ type: 'sun', x: 55, y: 22 });
+    decor.push({ type: 'sunrays', x: 55, y: 22 });
+    for (let i = 0; i < Math.floor(levelWidth / 65); i++) decor.push({ type: 'cloud', x: 30 + i * 62 + rng() * 30, y: 15 + rng() * 55, w: 22 + Math.floor(rng() * 24), layer: Math.floor(rng() * 3) });
+    for (let i = 0; i < 6; i++) decor.push({ type: 'bird', x: rng() * levelWidth, y: 20 + rng() * 70, phase: rng() * 200 });
+    for (let i = 0; i < Math.floor(levelWidth / 42); i++) decor.push({ type: 'daytree', x: 40 + i * 40 + rng() * 18, y: groundY, h: 20 + Math.floor(rng() * 12) });
+    for (let i = 0; i < Math.floor(levelWidth / 90); i++) decor.push({ type: 'hill', x: i * 88 + rng() * 20, y: groundY, w: 60 + Math.floor(rng() * 50), h: 14 + Math.floor(rng() * 12), dark: false });
+    for (let i = 0; i < 4; i++) decor.push({ type: 'butterfly', x: rng() * levelWidth, y: groundY - 20 - rng() * 40, phase: rng() * 300 });
   } else if (biome === 'beach') {
-    decor.push({ type: 'sun', x: 80, y: 22 });
-    for (let i = 0; i < Math.floor(levelWidth / 90); i++) decor.push({ type: 'cloud', x: 50 + i * 85 + rng() * 30, y: 15 + rng() * 40, w: 18 + Math.floor(rng() * 16) });
-    for (let i = 0; i < Math.floor(levelWidth / 55); i++) decor.push({ type: 'palm', x: 60 + i * 52 + rng() * 20, y: groundY });
-    for (let i = 0; i < Math.floor(levelWidth / 30); i++) decor.push({ type: 'wave', x: i * 28 + rng() * 10, y: groundY - 2 });
+    decor.push({ type: 'sun', x: 75, y: 18 });
+    decor.push({ type: 'sunrays', x: 75, y: 18 });
+    for (let i = 0; i < Math.floor(levelWidth / 85); i++) decor.push({ type: 'cloud', x: 40 + i * 82 + rng() * 30, y: 12 + rng() * 38, w: 20 + Math.floor(rng() * 18), layer: 0 });
+    for (let i = 0; i < Math.floor(levelWidth / 50); i++) decor.push({ type: 'palm', x: 50 + i * 48 + rng() * 18, y: groundY, h: 22 + Math.floor(rng() * 10) });
+    for (let i = 0; i < Math.floor(levelWidth / 22); i++) decor.push({ type: 'wave', x: i * 20 + rng() * 8, y: groundY - 2, phase: rng() * 100 });
+    for (let i = 0; i < 6; i++) decor.push({ type: 'bird', x: rng() * levelWidth, y: 18 + rng() * 50, phase: rng() * 200 });
+    for (let i = 0; i < Math.floor(levelWidth / 70); i++) decor.push({ type: 'starfish', x: rng() * levelWidth, y: groundY - 1 });
+    for (let i = 0; i < Math.floor(levelWidth / 30); i++) decor.push({ type: 'oceanshine', x: i * 28 + rng() * 10, y: groundY - 6, phase: rng() * 80 });
   } else if (biome === 'cave') {
-    // Long stalactites from ceiling
-    for (let i = 0; i < Math.floor(levelWidth / 18); i++) {
-      const h = 8 + Math.floor(rng() * 28);
-      decor.push({ type: 'stalactite', x: rng() * levelWidth, y: 0, h });
-      // matching stalagmite from floor (shorter)
-      if (rng() < 0.5) decor.push({ type: 'stalagmite', x: rng() * levelWidth, y: groundY, h: 4 + Math.floor(rng() * 14) });
+    for (let i = 0; i < Math.floor(levelWidth / 14); i++) {
+      const h = 6 + Math.floor(rng() * 32);
+      decor.push({ type: 'stalactite', x: rng() * levelWidth, y: 0, h, shade: Math.floor(rng() * 3) });
+      if (rng() < 0.55) decor.push({ type: 'stalagmite', x: rng() * levelWidth, y: groundY, h: 3 + Math.floor(rng() * 16), shade: Math.floor(rng() * 3) });
     }
-    // Water drip particles
-    for (let i = 0; i < 30; i++) decor.push({ type: 'drip', x: rng() * levelWidth, y: 0, speed: 0.4 + rng() * 0.8, phase: rng() * 200, h: 4 + Math.floor(rng() * 20) });
-    for (let i = 0; i < 20; i++) decor.push({ type: 'crystal', x: rng() * levelWidth, y: groundY - 4 - Math.floor(rng() * 8), c: Math.floor(rng() * 3) });
+    for (let i = 0; i < Math.floor(levelWidth / 60); i++) decor.push({ type: 'mushroom', x: rng() * levelWidth, y: groundY - 2, c: Math.floor(rng() * 4) });
+    for (let i = 0; i < 35; i++) decor.push({ type: 'drip', x: rng() * levelWidth, y: 0, speed: 0.3 + rng() * 0.9, phase: rng() * 200, h: 4 + Math.floor(rng() * 20) });
+    for (let i = 0; i < Math.floor(levelWidth / 35); i++) decor.push({ type: 'crystal', x: rng() * levelWidth, y: groundY - 3 - Math.floor(rng() * 10), c: Math.floor(rng() * 4) });
+    for (let i = 0; i < 5; i++) decor.push({ type: 'bat', x: rng() * levelWidth, y: 10 + rng() * 50, phase: rng() * 200 });
+    for (let i = 0; i < Math.floor(levelWidth / 40); i++) decor.push({ type: 'poolshine', x: i * 38 + rng() * 15, y: groundY - 1, phase: rng() * 60 });
   } else if (biome === 'hell') {
-    for (let i = 0; i < 50; i++) decor.push({ type: 'ember', x: rng() * levelWidth, y: rng() * H, b: rng() });
-    for (let i = 0; i < Math.floor(levelWidth / 45); i++) decor.push({ type: 'hellrock', x: 40 + i * 42 + rng() * 20, y: groundY });
+    for (let i = 0; i < Math.floor(levelWidth / 20); i++) decor.push({ type: 'lava', x: i * 18 + rng() * 8, y: groundY, phase: rng() * 80 });
+    for (let i = 0; i < 70; i++) decor.push({ type: 'ember', x: rng() * levelWidth, y: rng() * H, b: rng(), speed: 0.3 + rng() * 0.7 });
+    for (let i = 0; i < Math.floor(levelWidth / 38); i++) decor.push({ type: 'hellrock', x: 30 + i * 36 + rng() * 16, y: groundY, w: 8 + Math.floor(rng() * 8) });
+    for (let i = 0; i < Math.floor(levelWidth / 90); i++) decor.push({ type: 'firepillar', x: 50 + i * 88 + rng() * 20, y: groundY, h: 20 + Math.floor(rng() * 20), phase: rng() * 60 });
+    for (let i = 0; i < 20; i++) decor.push({ type: 'smoke', x: rng() * levelWidth, y: groundY - 10 - rng() * 30, phase: rng() * 200 });
+    for (let i = 0; i < Math.floor(levelWidth / 80); i++) decor.push({ type: 'hellcloud', x: i * 78 + rng() * 20, y: 10 + rng() * 50, w: 25 + Math.floor(rng() * 20) });
   } else if (biome === 'clouds') {
-    for (let i = 0; i < Math.floor(levelWidth / 55); i++) decor.push({ type: 'bigcloud', x: 20 + i * 52 + rng() * 20, y: 10 + rng() * 80, w: 30 + Math.floor(rng() * 30) });
-    for (let i = 0; i < 30; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * 40, s: 1, b: 0.2 + rng() * 0.4 });
+    for (let i = 0; i < Math.floor(levelWidth / 40); i++) decor.push({ type: 'bigcloud', x: 10 + i * 38 + rng() * 18, y: 8 + rng() * 90, w: 28 + Math.floor(rng() * 35), layer: Math.floor(rng() * 3) });
+    decor.push({ type: 'sun', x: 80, y: 15 });
+    decor.push({ type: 'rainbow', x: levelWidth * 0.3, y: 20 });
+    for (let i = 0; i < 8; i++) decor.push({ type: 'bird', x: rng() * levelWidth, y: 15 + rng() * 80, phase: rng() * 200 });
+    for (let i = 0; i < 20; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * 30, s: 1, b: 0.15 + rng() * 0.3 });
   } else if (biome === 'ocean') {
-    decor.push({ type: 'moon', x: 50, y: 25 });
-    for (let i = 0; i < 60; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * (H * 0.6), s: 1, b: 0.2 + rng() * 0.6 });
-    for (let i = 0; i < Math.floor(levelWidth / 35); i++) decor.push({ type: 'bubble', x: rng() * levelWidth, y: 20 + rng() * (H - 40), b: rng() });
-    for (let i = 0; i < Math.floor(levelWidth / 50); i++) decor.push({ type: 'seaweed', x: 30 + i * 48 + rng() * 20, y: groundY });
+    decor.push({ type: 'moon', x: 45, y: 22 });
+    for (let i = 0; i < 80; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * (H * 0.65), s: rng() > 0.8 ? 2 : 1, b: 0.2 + rng() * 0.7 });
+    for (let i = 0; i < 3; i++) decor.push({ type: 'shootingstar', x: rng() * levelWidth, y: 8 + rng() * 40, phase: rng() * 500, speed: 2 + rng() * 1.5 });
+    for (let i = 0; i < Math.floor(levelWidth / 18); i++) decor.push({ type: 'wave', x: i * 16 + rng() * 6, y: groundY - 3, phase: rng() * 100 });
+    for (let i = 0; i < 8; i++) decor.push({ type: 'fish', x: rng() * levelWidth, y: groundY - 8 - rng() * 20, phase: rng() * 200, dir: rng() > 0.5 ? 1 : -1 });
+    for (let i = 0; i < Math.floor(levelWidth / 28); i++) decor.push({ type: 'bubble', x: rng() * levelWidth, y: 20 + rng() * (H - 50), b: rng(), speed: 0.2 + rng() * 0.4 });
+    for (let i = 0; i < Math.floor(levelWidth / 40); i++) decor.push({ type: 'seaweed', x: 20 + i * 38 + rng() * 16, y: groundY, h: 10 + Math.floor(rng() * 12) });
+    decor.push({ type: 'moonreflect', x: 45, y: groundY - 8 });
   } else if (biome === 'city') {
-    for (let i = 0; i < 50; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * (H * 0.5), s: 1, b: 0.15 + rng() * 0.4 });
-    for (let i = 0; i < Math.floor(levelWidth / 40); i++) decor.push({ type: 'building', x: i * 38 + rng() * 10, y: groundY, h: 20 + Math.floor(rng() * 50), w: 14 + Math.floor(rng() * 16) });
+    for (let i = 0; i < 60; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * (H * 0.55), s: 1, b: 0.1 + rng() * 0.5 });
+    for (let i = 0; i < Math.floor(levelWidth / 32); i++) decor.push({ type: 'building', x: i * 30 + rng() * 8, y: groundY, h: 18 + Math.floor(rng() * 55), w: 12 + Math.floor(rng() * 18), lit: Math.floor(rng() * 4) });
+    for (let i = 0; i < Math.floor(levelWidth / 55); i++) decor.push({ type: 'streetlight', x: 25 + i * 52 + rng() * 15, y: groundY });
+    for (let i = 0; i < Math.floor(levelWidth / 100); i++) decor.push({ type: 'neon', x: 40 + i * 95 + rng() * 20, y: groundY - 25 - Math.floor(rng() * 20), c: Math.floor(rng() * 4) });
+    for (let i = 0; i < 4; i++) decor.push({ type: 'bird', x: rng() * levelWidth, y: 20 + rng() * 50, phase: rng() * 200 });
+    decor.push({ type: 'moon', x: levelWidth * 0.7, y: 20 });
   } else if (biome === 'mountains') {
-    for (let i = 0; i < 30; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * (H * 0.4), s: 1, b: 0.2 + rng() * 0.5 });
-    for (let i = 0; i < Math.floor(levelWidth / 60); i++) decor.push({ type: 'mountain', x: i * 58 + rng() * 20, y: groundY, h: 30 + Math.floor(rng() * 50), w: 40 + Math.floor(rng() * 30) });
-    for (let i = 0; i < Math.floor(levelWidth / 70); i++) decor.push({ type: 'pinetree', x: 30 + i * 65 + rng() * 25, y: groundY });
+    for (let i = 0; i < 40; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * (H * 0.45), s: 1, b: 0.15 + rng() * 0.55 });
+    for (let i = 0; i < Math.floor(levelWidth / 50); i++) decor.push({ type: 'mountain', x: i * 48 + rng() * 18, y: groundY, h: 28 + Math.floor(rng() * 55), w: 38 + Math.floor(rng() * 32), layer: 0 });
+    for (let i = 0; i < Math.floor(levelWidth / 70); i++) decor.push({ type: 'mountain', x: i * 68 + rng() * 22, y: groundY, h: 18 + Math.floor(rng() * 30), w: 28 + Math.floor(rng() * 22), layer: 1 });
+    for (let i = 0; i < Math.floor(levelWidth / 35); i++) decor.push({ type: 'pinetree', x: 20 + i * 33 + rng() * 14, y: groundY, h: 14 + Math.floor(rng() * 10) });
+    for (let i = 0; i < 4; i++) decor.push({ type: 'bird', x: rng() * levelWidth, y: 15 + rng() * 55, phase: rng() * 200 });
+    for (let i = 0; i < 25; i++) decor.push({ type: 'snow', x: rng() * levelWidth, y: rng() * H, phase: rng() * 300, speed: 0.2 + rng() * 0.4 });
+    decor.push({ type: 'moon', x: levelWidth * 0.6, y: 18 });
   } else if (biome === 'space') {
-    for (let i = 0; i < 120; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * H, s: rng() > 0.85 ? 2 : 1, b: 0.3 + rng() * 0.7 });
-    for (let i = 0; i < 5; i++) decor.push({ type: 'planet', x: 40 + rng() * (levelWidth - 80), y: 20 + rng() * 80, r: 6 + Math.floor(rng() * 10), hue: Math.floor(rng() * 360) });
+    for (let i = 0; i < 180; i++) decor.push({ type: 'star', x: rng() * levelWidth, y: rng() * H, s: rng() > 0.9 ? 2 : 1, b: 0.2 + rng() * 0.8 });
+    for (let i = 0; i < 5; i++) decor.push({ type: 'nebula', x: rng() * levelWidth, y: rng() * (H * 0.7), r: 20 + Math.floor(rng() * 30), hue: Math.floor(rng() * 360) });
+    for (let i = 0; i < 4; i++) decor.push({ type: 'planet', x: 40 + rng() * (levelWidth - 80), y: 15 + rng() * 90, r: 5 + Math.floor(rng() * 12), hue: Math.floor(rng() * 360) });
+    for (let i = 0; i < 6; i++) decor.push({ type: 'shootingstar', x: rng() * levelWidth, y: 5 + rng() * 80, phase: rng() * 400, speed: 2.5 + rng() * 2 });
+    for (let i = 0; i < 8; i++) decor.push({ type: 'asteroid', x: rng() * levelWidth, y: rng() * H, r: 2 + Math.floor(rng() * 4), phase: rng() * 200 });
   }
 
   return decor;
@@ -926,13 +994,13 @@ function initLevel() {
 
   camera = { x: 0, targetX: 0 };
 
-  // Boss level: start ghost playback from previous recording
-  if (isBossLevel(level) && ghostRecording.length > 0) {
-    startGhostPlayback();
+  // Boss level: activate ghost (it chases 3s-delayed position from buffer)
+  if (isBossLevel(level)) {
+    ghostActive = true;
   } else {
     ghostActive = false;
   }
-  // Always record the player's run for the next boss level
+  // Always record — ghost uses rolling buffer
   startGhostRecording();
 }
 
@@ -1054,9 +1122,18 @@ canvas.addEventListener('click', e => {
     return;
   }
 
-  // In-game: orb click
+  // In-game: orb click OR respawn on death
   if (gameState !== 'playing') return;
-  if (!player || player.dead) return;
+  if (!player) return;
+  // Click anywhere to respawn when dead
+  if (player.dead && player.deathTimer > 60) {
+    deaths++;
+    if (gameMode === 'hardcore') { level = 1; deaths = 0; totalMs = 0; timerRunning = false; timerStart = null; }
+    startGhostRecording();
+    initLevel();
+    return;
+  }
+  if (player.dead) return;
   if (!orbs) return;
   const cx = mx + camera.x;
   const cy = my;
@@ -1318,7 +1395,7 @@ function update() {
     if (p.broken) {
       if (p.type !== 'countdown') {
         p.respawnTimer += DT;
-        if (p.respawnTimer >= 120) {
+        if (p.respawnTimer >= 144) {
           p.broken = false;
           p.crumbling = false;
           p.crumbleTimer = 0;
@@ -1337,10 +1414,10 @@ function update() {
     // Moving / spikemove translation
     if (p.type === 'moving' || p.type === 'spikemove') {
       if (p.moveAxis === 'y') {
-        p.y += p.moveDir * p.moveSpeed;
+        p.y += p.moveDir * p.moveSpeed * DT;
         if (Math.abs(p.y - p.originY) > p.moveRange) p.moveDir *= -1;
       } else {
-        p.x += p.moveDir * p.moveSpeed;
+        p.x += p.moveDir * p.moveSpeed * DT;
         if (Math.abs(p.x - p.originX) > p.moveRange) p.moveDir *= -1;
       }
       // Spikemove: track rotation angle for draw
@@ -1350,10 +1427,10 @@ function update() {
       }
     }
 
-    // On/off platform: toggle every 2 seconds (120 frames)
+    // On/off platform: toggle every 1 second (144 DT units)
     if (p.type === 'onoff') {
-      p.onoffTimer++;
-      if (p.onoffTimer >= 120) {
+      p.onoffTimer += DT;
+      if (p.onoffTimer >= 144) {
         p.onoffTimer = 0;
         p.onoffOn = !p.onoffOn;
       }
@@ -1361,7 +1438,7 @@ function update() {
 
     // Shake offset — only when player is physically on this platform
     if (p.type === 'shakemove' || p.type === 'shakewobble') {
-      p.wobbleTimer++; // always tick for shake animation
+      p.wobbleTimer += DT; // always tick for shake animation
       if (prevOnPlat === p) {
         const t = p.wobbleTimer * 0.55;
         p.shakeX = Math.sin(t * 1.7) * 1.5;
@@ -1375,13 +1452,13 @@ function update() {
     // Wobble crumble — only ticks while player stands on it (never shakemove)
     const isWobbleType = p.type === 'wobble' || p.type === 'shakewobble' || p.type === 'flipwobble';
     if (isWobbleType) {
-      p.wobbleTimer++;
+      p.wobbleTimer += DT;
       if (p.crumbling) {
         if (prevOnPlat === p) {
-          p.crumbleTimer++;
+          p.crumbleTimer += DT;
         } else {
           // Player left — slowly reset crumble timer
-          p.crumbleTimer = Math.max(0, p.crumbleTimer - 2);
+          p.crumbleTimer = Math.max(0, p.crumbleTimer - 2 * DT);
           if (p.crumbleTimer === 0) p.crumbling = false;
         }
         if (p.crumbleTimer >= p.crumbleMax) {
@@ -1393,7 +1470,7 @@ function update() {
 
     // Flip (flip, flipwobble)
     if (p.type === 'flip' || p.type === 'flipwobble') {
-      p.flipTimer++;
+      p.flipTimer += DT;
       if (p.flipTimer >= p.flipInterval) {
         p.flipTimer = 0;
         p.flipped = !p.flipped;
@@ -1426,7 +1503,8 @@ function update() {
     const py = p.y + sy;
 
     const overlapX = player.x + player.w > px && player.x < px + p.w;
-    const overlapY = player.y + player.h > py && player.y + player.h < py + p.h + player.vy + 2;
+    // Use velocity magnitude for tunneling prevention (DT-aware)
+    const overlapY = player.y + player.h > py && player.y + player.h < py + p.h + Math.abs(player.vy) * DT + 2;
 
     if (overlapX && overlapY && player.vy >= 0) {
       const isFlipType = p.type === 'flip' || p.type === 'flipwobble';
@@ -1502,19 +1580,12 @@ function update() {
 
   // ── Ghost recording & playback ──
   tickGhostRecord();
-  if (ghostActive) {
-    if (ghostHeadstart > 0) {
-      ghostHeadstart--;
-    } else {
-      if (ghostFrame < ghostPlayback.length) {
-        ghostPos = ghostPlayback[ghostFrame];
-        ghostFrame++;
-        // Kill player if ghost touches them
-        if (Math.abs(ghostPos.x - player.x) < player.w &&
-            Math.abs(ghostPos.y - player.y) < player.h) {
-          killPlayer(); return;
-        }
-      }
+  if (ghostActive && isBossLevel(level) && !player.dead && ghostBuffer.length > GHOST_DELAY) {
+    const delayedIdx = Math.max(0, ghostBuffer.length - GHOST_DELAY);
+    if (ghostBuffer[delayedIdx]) ghostPos = { ...ghostBuffer[delayedIdx] };
+    if (Math.abs(ghostPos.x - player.x) < player.w &&
+        Math.abs(ghostPos.y - player.y) < player.h) {
+      killPlayer(); return;
     }
   }
 
@@ -1522,34 +1593,44 @@ function update() {
   if (gameMode === 'infinite' && platforms) {
     const lastPlat = platforms[platforms.length - 1];
     if (lastPlat && player.x + W * 2 > lastPlat.x) {
-      // Generate a new chunk
-      const rng2 = mulberry32((Date.now() ^ infiniteScore) & 0xffffff);
+      // Pick a random difficulty level 1-100 for this chunk (no wind/ghost)
+      const chunkLvl = 1 + Math.floor(Math.random() * 100);
+      const rng2 = mulberry32((Date.now() ^ infiniteScore ^ chunkLvl) & 0xffffff);
+      const chunkStage = chunkLvl <= 9 ? 1 : chunkLvl <= 19 ? 2 : chunkLvl <= 29 ? 3 :
+                         chunkLvl <= 39 ? 4 : chunkLvl <= 49 ? 5 : chunkLvl <= 59 ? 6 : 7;
+      const chunkProgress = chunkStage === 7 ? Math.min((chunkLvl - 60) / 40, 1) : ((chunkLvl % 10) / 9);
       const chunkStart = lastPlat.x + lastPlat.w;
       const chunkCount = 12;
       let cx2 = chunkStart, cy2 = lastPlat.y;
+      let prevT2 = 'static';
+      const DANGEROUS2 = new Set(['flip','flipwobble','onoff']);
       for (let i = 0; i < chunkCount; i++) {
-        const scoreTier = Math.min(Math.floor(infiniteScore / 200), 6);
-        const forceOrb = scoreTier >= 3 && i % 4 === 0 && rng2() < 0.5;
-        const gx2 = forceOrb ? (75 + rng2() * 20) : (20 + rng2() * 30);
-        const gy2 = (rng2() - 0.5) * 80;
-        const pw2 = Math.max(10, 28 - scoreTier * 2) + Math.floor(rng2() * 14);
+        const forceOrb = chunkStage >= 4 && i % 4 === 0 && rng2() < 0.5;
+        const baseGap = 16 + chunkStage * 3 + chunkProgress * 8;
+        const gx2 = forceOrb ? (75 + rng2() * 20) : (baseGap + rng2() * (10 + chunkStage * 2));
+        const gy2 = (rng2() - 0.5) * Math.min(20 + chunkStage * 3, 50) * 2;
+        const minW2 = Math.max(10, 28 - chunkStage * 2);
+        const pw2 = minW2 + Math.floor(rng2() * 16);
         const px2 = cx2 + gx2;
-        const py2 = Math.max(40, Math.min(H - 40, cy2 + gy2));
+        const py2 = Math.max(20, Math.min(H - 20, cy2 + gy2));
         const r1 = rng2(), r2 = rng2();
         let t2 = 'static';
-        if (scoreTier >= 1 && r1 < 0.15 + scoreTier * 0.03) t2 = 'wobble';
-        if (scoreTier >= 2 && r1 < 0.25) t2 = 'moving';
-        if (scoreTier >= 3 && r2 < 0.12) t2 = 'countdown';
-        if (scoreTier >= 4 && r2 < 0.20) t2 = 'slippery';
-        if (scoreTier >= 5 && r2 < 0.28) t2 = 'flip';
-        if (scoreTier >= 6 && r2 < 0.34) t2 = 'flipwobble';
+        if (chunkStage >= 2 && r1 < 0.15 + chunkProgress * 0.3) t2 = 'wobble';
+        if (chunkStage >= 3 && r1 < 0.30) t2 = 'moving';
+        if (chunkStage >= 4 && r2 < 0.12) t2 = 'countdown';
+        if (chunkStage >= 5 && r2 < 0.20) t2 = 'slippery';
+        if (chunkStage >= 6 && r2 < 0.28) t2 = 'flip';
+        if (chunkStage >= 7 && r2 < 0.34) t2 = 'flipwobble';
+        if (chunkLvl >= 70 && r2 < 0.12) t2 = 'onoff';
+        // No dangerous pairs
+        if (DANGEROUS2.has(t2) && DANGEROUS2.has(prevT2)) t2 = 'static';
         const np = makePlatform(px2, py2, pw2, t2, rng2);
         if (t2 === 'countdown') np.countdownHits = 1 + Math.floor(rng2() * 3);
         platforms.push(np);
-        // Add orb for big gaps
-        if (forceOrb && orbs) {
+        if (forceOrb && orbs && chunkStage >= 4) {
           orbs.push({ x: cx2 + gx2 / 2 - 3, y: py2 - 24, used: false, pulse: rng2() * Math.PI * 2, shineTimer: 0 });
         }
+        prevT2 = t2;
         cx2 = px2 + pw2;
         cy2 = py2;
       }
@@ -1904,18 +1985,44 @@ function drawRagebaitTitle(cx, y) {
 
 // ── Menu screen ──
 function drawMenu() {
-  // Sky bg
-  ctx.fillStyle = '#06020e';
-  ctx.fillRect(0, 0, W, H + BRAND_H);
+  // Rich night sky background
+  const bands2 = 8;
+  const bandH2 = Math.ceil((H + BRAND_H) / bands2);
+  const menuSky = [[2,1,12],[4,2,18],[6,3,24],[8,4,30],[5,2,18],[3,1,12],[2,1,8],[1,0,5]];
+  for (let i = 0; i < bands2; i++) {
+    const c = menuSky[i];
+    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+    ctx.fillRect(0, i * bandH2, W, bandH2);
+  }
 
-  // Stars
+  // Stars with twinkle
   if (bgDecor) {
     for (const d of bgDecor) {
       if (d.type !== 'star') continue;
-      const alpha = d.b * (0.5 + 0.3 * Math.sin(Date.now() * 0.0008 + d.x));
+      const alpha = d.b * (0.4 + 0.5 * Math.sin(Date.now() * 0.001 + d.x * 0.1));
       ctx.fillStyle = `rgba(255,255,255,${alpha})`;
       ctx.fillRect(Math.round(d.x % W), Math.round(d.y % (H * 0.7)), d.s, d.s);
     }
+  }
+
+  // Shooting star on menu
+  const mst = (Date.now() * 0.0008) % 8;
+  if (mst < 1) {
+    const alpha = Math.sin(mst * Math.PI);
+    const sx2 = Math.round(mst * W * 0.8 + 20);
+    const sy2 = Math.round(mst * 30 + 10);
+    ctx.fillStyle = `rgba(255,255,200,${alpha * 0.9})`;
+    ctx.fillRect(sx2, sy2, 2, 1);
+    ctx.fillStyle = `rgba(255,255,200,${alpha * 0.4})`;
+    ctx.fillRect(sx2 - 5, sy2 - 2, 5, 1);
+    ctx.fillRect(sx2 - 10, sy2 - 4, 4, 1);
+  }
+
+  // Distant silhouette hills
+  ctx.fillStyle = 'rgba(4,2,14,0.7)';
+  for (let hx = 0; hx < W; hx += 2) {
+    const hh = 8 + Math.round(Math.sin(hx * 0.04) * 5 + Math.sin(hx * 0.015) * 8);
+    ctx.fillRect(hx, H - 20 - hh, 2, hh + 20);
   }
 
   // 3D title
@@ -1933,7 +2040,7 @@ function drawMenu() {
   drawBtn(BTN_PLAY, 'PLAY', '#44ff88');
   // Trophy icon left of RECORDS label
   drawBtn(BTN_REC, '      RECORDS', '#ffdd44');
-  drawTrophy(BTN_REC.x + 3, BTN_REC.y + 1);
+  drawTrophy(BTN_REC.x + 13, BTN_REC.y + 1);
   if (menuStarted) {
     drawBtn(BTN_RESET, 'RESET', '#ff6644');
     const note = 'RESETS LEVEL  KEEPS RECORDS';
@@ -1953,7 +2060,7 @@ function drawRecords() {
   ctx.fillStyle = '#06020e';
   ctx.fillRect(0, 0, W, H + BRAND_H);
 
-  drawTrophy(W / 2 - 70, 10);
+  drawTrophy(W / 2 - 90, 10);
   drawText('RECORDS', W / 2 - 14, 12, '#ffdd44', 1);
 
   // ── Section 1: Normal & Hard per-level table ──────────────────────────────
@@ -2135,7 +2242,13 @@ function draw() {
   // ── Background decorations ──
   if (bgDecor) {
     for (const d of bgDecor) {
-      const dx = Math.round(d.x), dy = Math.round(d.y);
+      // In infinite mode, tile decorations by wrapping x relative to camera
+      let rawX = d.x;
+      if (gameMode === 'infinite' && bgDecor.length > 0) {
+        const levelW = Math.max(...bgDecor.map(b => b.x)) + 100;
+        rawX = ((d.x - camera.x) % levelW + levelW) % levelW + camera.x - levelW / 2;
+      }
+      const dx = Math.round(rawX), dy = Math.round(d.y);
       if (d.type === 'star') {
         const alpha = d.b * (0.6 + 0.4 * Math.sin(Date.now() * 0.0008 + d.x));
         ctx.fillStyle = `rgba(255,255,255,${alpha})`;
@@ -2145,39 +2258,50 @@ function draw() {
       } else if (d.type === 'tree') {
         drawTree(dx, dy);
       } else if (d.type === 'sun') {
-        // pixelated sun
-        ctx.fillStyle = '#ffee44';
-        ctx.fillRect(dx - 6, dy - 6, 12, 12);
-        ctx.fillStyle = '#ffcc00';
-        ctx.fillRect(dx - 4, dy - 4, 8, 8);
-        ctx.fillStyle = 'rgba(255,240,100,0.3)';
+        // Layered pixelated sun with corona
+        ctx.fillStyle = 'rgba(255,240,100,0.08)';
+        ctx.fillRect(dx - 14, dy - 14, 28, 28);
+        ctx.fillStyle = 'rgba(255,230,80,0.15)';
         ctx.fillRect(dx - 10, dy - 10, 20, 20);
-        // rays
-        ctx.fillStyle = '#ffee44';
-        for (let a = 0; a < 8; a++) {
-          const ang = a * Math.PI / 4 + Date.now() * 0.0003;
-          const rx = Math.round(Math.cos(ang) * 10);
-          const ry = Math.round(Math.sin(ang) * 10);
-          ctx.fillRect(dx + rx, dy + ry, 2, 2);
-        }
+        ctx.fillStyle = '#ffdd44';
+        ctx.fillRect(dx - 6, dy - 6, 12, 12);
+        ctx.fillStyle = '#ffee66';
+        ctx.fillRect(dx - 4, dy - 4, 8, 8);
+        ctx.fillStyle = '#fffaaa';
+        ctx.fillRect(dx - 2, dy - 2, 4, 4);
       } else if (d.type === 'cloud' || d.type === 'bigcloud') {
         const cw = d.w || 20;
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        ctx.fillRect(dx, dy + 3, cw, 4);
-        ctx.fillRect(dx + 2, dy, cw - 4, 7);
-        ctx.fillRect(dx + Math.floor(cw * 0.3), dy - 2, Math.floor(cw * 0.4), 5);
+        const layer = d.layer || 0;
+        const alpha = layer === 0 ? 0.85 : layer === 1 ? 0.65 : 0.45;
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+        ctx.fillRect(dx, dy + 3, cw, 5);
+        ctx.fillRect(dx + 2, dy, cw - 4, 8);
+        ctx.fillRect(dx + Math.floor(cw * 0.25), dy - 3, Math.floor(cw * 0.5), 5);
+        // shadow underside
+        ctx.fillStyle = `rgba(180,200,230,${alpha * 0.4})`;
+        ctx.fillRect(dx + 1, dy + 7, cw - 2, 2);
+        // highlight top
+        ctx.fillStyle = `rgba(255,255,255,${alpha * 0.5})`;
+        ctx.fillRect(dx + Math.floor(cw * 0.3), dy - 3, Math.floor(cw * 0.3), 1);
       } else if (d.type === 'daytree') {
-        // bright green day tree
-        ctx.fillStyle = '#2d5a1b';
-        ctx.fillRect(dx + 3, dy - 8, 2, 8);
-        ctx.fillStyle = '#3a8c22';
-        ctx.fillRect(dx + 1, dy - 14, 6, 4);
-        ctx.fillStyle = '#4aaa2a';
-        ctx.fillRect(dx, dy - 18, 8, 4);
-        ctx.fillStyle = '#5acc33';
-        ctx.fillRect(dx + 1, dy - 22, 6, 4);
-        ctx.fillStyle = '#6aee44';
-        ctx.fillRect(dx + 2, dy - 25, 4, 3);
+        const th = d.h || 22;
+        // trunk with shading
+        ctx.fillStyle = '#5a3a1a';
+        ctx.fillRect(dx + 3, dy - Math.floor(th * 0.4), 2, Math.floor(th * 0.4));
+        ctx.fillStyle = '#3d2510';
+        ctx.fillRect(dx + 4, dy - Math.floor(th * 0.4), 1, Math.floor(th * 0.4));
+        // foliage layers with light/shadow
+        const layers = [[0,th,8,4,'#2d6b18'],[1,th-4,10,5,'#3a8c22'],[2,th-8,8,4,'#4aaa2a'],[3,th-12,6,4,'#5acc33'],[4,th-16,4,3,'#6aee44']];
+        for (const [, yoff, w2, h2, col] of layers) {
+          ctx.fillStyle = col;
+          ctx.fillRect(dx + Math.floor((8 - w2) / 2), dy - yoff, w2, h2);
+          // shadow side
+          ctx.fillStyle = 'rgba(0,0,0,0.2)';
+          ctx.fillRect(dx + Math.floor((8 - w2) / 2) + Math.floor(w2 * 0.6), dy - yoff, Math.floor(w2 * 0.4), h2);
+          // highlight
+          ctx.fillStyle = 'rgba(255,255,255,0.15)';
+          ctx.fillRect(dx + Math.floor((8 - w2) / 2), dy - yoff, 1, 1);
+        }
       } else if (d.type === 'palm') {
         ctx.fillStyle = '#8b5e3c';
         ctx.fillRect(dx + 3, dy - 20, 2, 20);
@@ -2192,14 +2316,20 @@ function draw() {
         ctx.fillStyle = 'rgba(100,200,255,0.3)';
         ctx.fillRect(dx, dy, 12, 2);
       } else if (d.type === 'stalactite') {
-        // Tapered stalactite from ceiling
-        ctx.fillStyle = '#554444';
+        const sh = d.shade || 0;
+        const cols = ['#554444','#4a3a3a','#665555'];
+        ctx.fillStyle = cols[sh % 3];
         ctx.fillRect(dx, 0, 3, d.h);
-        ctx.fillStyle = '#776655';
+        // shading
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(dx + 2, 0, 1, d.h);
+        ctx.fillStyle = 'rgba(255,255,255,0.1)';
         ctx.fillRect(dx, 0, 1, d.h - 2);
         // drip tip
-        ctx.fillStyle = 'rgba(100,180,255,0.6)';
+        ctx.fillStyle = 'rgba(100,180,255,0.7)';
         ctx.fillRect(dx + 1, d.h, 1, 2);
+        ctx.fillStyle = 'rgba(180,220,255,0.4)';
+        ctx.fillRect(dx + 1, d.h + 2, 1, 1);
       } else if (d.type === 'stalagmite') {
         // Tapered stalagmite from floor
         ctx.fillStyle = '#554444';
@@ -2217,11 +2347,17 @@ function draw() {
           ctx.fillRect(dx - 1, H - 32, 3, 1);
         }
       } else if (d.type === 'crystal') {
-        const cols = ['#44ffcc','#ff44cc','#44ccff'];
-        ctx.fillStyle = cols[d.c % 3];
-        ctx.fillRect(dx, dy, 2, 6);
-        ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.fillRect(dx, dy, 1, 2);
+        const cols2 = ['#44ffcc','#ff44cc','#44ccff','#ffcc44'];
+        const gc = cols2[d.c % 4];
+        ctx.fillStyle = gc;
+        ctx.fillRect(dx, dy, 2, 7);
+        ctx.fillRect(dx - 1, dy + 2, 4, 3);
+        // glow
+        ctx.fillStyle = gc.replace(')', ',0.2)').replace('rgb', 'rgba');
+        ctx.fillRect(dx - 2, dy - 1, 6, 9);
+        // highlight
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillRect(dx, dy, 1, 3);
       } else if (d.type === 'ember') {
         const flicker = 0.4 + 0.6 * Math.sin(Date.now() * 0.005 + d.b * 10);
         ctx.fillStyle = `rgba(255,${Math.floor(80 + flicker * 80)},0,${flicker * 0.8})`;
@@ -2236,58 +2372,269 @@ function draw() {
         ctx.fillStyle = `rgba(100,200,255,${alpha})`;
         ctx.fillRect(dx, dy, 2, 2);
       } else if (d.type === 'seaweed') {
-        ctx.fillStyle = '#1a6b3a';
-        for (let sy = 0; sy < 16; sy++) {
-          ctx.fillRect(dx + Math.round(Math.sin(sy * 0.8 + Date.now() * 0.002) * 2), dy - sy, 2, 1);
+        const sh2 = d.h || 14;
+        for (let sy = 0; sy < sh2; sy++) {
+          const sway = Math.round(Math.sin(sy * 0.6 + Date.now() * 0.002) * 2.5);
+          const green = Math.floor(80 + (sy / sh2) * 60);
+          ctx.fillStyle = `rgb(10,${green},40)`;
+          ctx.fillRect(dx + sway, dy - sy, 2, 1);
+          // highlight
+          if (sy % 3 === 0) {
+            ctx.fillStyle = 'rgba(100,255,150,0.2)';
+            ctx.fillRect(dx + sway, dy - sy, 1, 1);
+          }
         }
       } else if (d.type === 'building') {
-        const lit = Math.floor(Date.now() / 800) % 3;
+        const lit = d.lit !== undefined ? d.lit : Math.floor(Date.now() / 800) % 4;
+        // Building body with gradient shading
         ctx.fillStyle = '#1a1a2e';
         ctx.fillRect(dx, dy - d.h, d.w, d.h);
-        ctx.fillStyle = '#2a2a3e';
-        ctx.fillRect(dx, dy - d.h, d.w, 1);
-        // windows
+        // Side shading
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(dx + Math.floor(d.w * 0.7), dy - d.h, Math.floor(d.w * 0.3), d.h);
+        // Roof highlight
+        ctx.fillStyle = '#2a2a4e';
+        ctx.fillRect(dx, dy - d.h, d.w, 2);
+        // Windows with varied colors
         for (let wy = 4; wy < d.h - 4; wy += 5) {
           for (let wx = 2; wx < d.w - 2; wx += 4) {
-            const on = ((dx + wx + wy) % 5 !== lit);
-            ctx.fillStyle = on ? '#ffee88' : '#222233';
+            const on = ((dx + wx + wy + lit) % 5 !== 0);
+            const warmth = ((dx + wx) % 3);
+            ctx.fillStyle = on ? (warmth === 0 ? '#ffee88' : warmth === 1 ? '#ffcc66' : '#ffe8aa') : '#111122';
             ctx.fillRect(dx + wx, dy - d.h + wy, 2, 3);
+            // window glow
+            if (on) {
+              ctx.fillStyle = 'rgba(255,220,100,0.08)';
+              ctx.fillRect(dx + wx - 1, dy - d.h + wy - 1, 4, 5);
+            }
           }
         }
       } else if (d.type === 'mountain') {
-        // Triangle: wide base at dy, peak at dy-d.h
-        ctx.fillStyle = '#445566';
+        const layer = d.layer || 0;
+        const baseCol = layer === 0 ? [55,72,105] : [38,52,80];
+        const snowCol = layer === 0 ? [220,235,255] : [180,200,230];
+        // Mountain body with shading
         for (let my = 0; my < d.h; my++) {
+          const mw = Math.round(((d.h - my) / d.h) * d.w);
+          const shade = my < d.h * 0.5 ? 0 : Math.floor((my - d.h * 0.5) / d.h * 30);
+          ctx.fillStyle = `rgb(${baseCol[0]+shade},${baseCol[1]+shade},${baseCol[2]+shade})`;
+          ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
+          // shadow right side
+          if (mw > 4) {
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.fillRect(dx + Math.floor(d.w / 2) + Math.floor(mw * 0.1), dy - my, Math.floor(mw * 0.4), 1);
+          }
+        }
+        // Snow cap
+        ctx.fillStyle = `rgb(${snowCol[0]},${snowCol[1]},${snowCol[2]})`;
+        for (let my = d.h - Math.floor(d.h * 0.28); my < d.h; my++) {
           const mw = Math.round(((d.h - my) / d.h) * d.w);
           ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
         }
-        // snow cap near peak
-        ctx.fillStyle = '#ddeeff';
-        for (let my = d.h - Math.floor(d.h * 0.25); my < d.h; my++) {
-          const mw = Math.round(((d.h - my) / d.h) * d.w);
+        // Snow highlight
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        for (let my = d.h - Math.floor(d.h * 0.1); my < d.h; my++) {
+          const mw = Math.round(((d.h - my) / d.h) * d.w * 0.4);
           ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
         }
       } else if (d.type === 'pinetree') {
-        ctx.fillStyle = '#2a4a2a';
-        ctx.fillRect(dx + 3, dy - 8, 2, 8);
-        ctx.fillStyle = '#1a3a1a';
-        ctx.fillRect(dx + 1, dy - 14, 6, 4);
-        ctx.fillRect(dx, dy - 18, 8, 4);
-        ctx.fillRect(dx + 1, dy - 22, 6, 4);
-        ctx.fillRect(dx + 2, dy - 25, 4, 3);
+        const ph = d.h || 16;
+        ctx.fillStyle = '#3a2a18';
+        ctx.fillRect(dx + 3, dy - Math.floor(ph * 0.35), 2, Math.floor(ph * 0.35));
+        // Layered foliage with shading
+        const pLayers = [[ph,6,'#1a3a1a'],[ph-4,8,'#1e4a1e'],[ph-8,6,'#224e22'],[ph-12,4,'#265226']];
+        for (const [yoff, w2, col] of pLayers) {
+          ctx.fillStyle = col;
+          ctx.fillRect(dx + Math.floor((8 - w2) / 2), dy - yoff, w2, 4);
+          ctx.fillStyle = 'rgba(0,0,0,0.25)';
+          ctx.fillRect(dx + Math.floor((8 - w2) / 2) + Math.floor(w2 * 0.55), dy - yoff, Math.floor(w2 * 0.45), 4);
+          ctx.fillStyle = 'rgba(255,255,255,0.08)';
+          ctx.fillRect(dx + Math.floor((8 - w2) / 2), dy - yoff, 1, 2);
+        }
       } else if (d.type === 'planet') {
         const pr = d.r;
-        ctx.fillStyle = `hsl(${d.hue},60%,40%)`;
+        // Planet body with shading
         for (let pr2 = -pr; pr2 <= pr; pr2++) {
-          const pw = Math.round(Math.sqrt(pr * pr - pr2 * pr2) * 2);
-          ctx.fillRect(dx - Math.floor(pw / 2), dy + pr2, pw, 1);
+          const pw2 = Math.round(Math.sqrt(pr * pr - pr2 * pr2) * 2);
+          const shade = pr2 < 0 ? Math.min(255, 80 + Math.floor((pr + pr2) / pr * 80)) : 40;
+          ctx.fillStyle = `hsl(${d.hue},55%,${shade > 60 ? 45 : 30}%)`;
+          ctx.fillRect(dx - Math.floor(pw2 / 2), dy + pr2, pw2, 1);
         }
-        // ring
-        ctx.fillStyle = `hsla(${d.hue},60%,70%,0.4)`;
-        ctx.fillRect(dx - pr - 4, dy, pr * 2 + 8, 1);
-        // highlight
-        ctx.fillStyle = `hsla(${d.hue},80%,80%,0.5)`;
-        ctx.fillRect(dx - Math.floor(pr * 0.4), dy - Math.floor(pr * 0.5), Math.floor(pr * 0.4), Math.floor(pr * 0.3));
+        // Ring
+        ctx.fillStyle = `hsla(${d.hue},60%,70%,0.35)`;
+        ctx.fillRect(dx - pr - 5, dy, pr * 2 + 10, 1);
+        ctx.fillRect(dx - pr - 3, dy + 1, pr * 2 + 6, 1);
+        // Highlight
+        ctx.fillStyle = `hsla(${d.hue},80%,85%,0.45)`;
+        ctx.fillRect(dx - Math.floor(pr * 0.35), dy - Math.floor(pr * 0.45), Math.floor(pr * 0.35), Math.floor(pr * 0.25));
+      } else if (d.type === 'shootingstar') {
+        const t2 = (Date.now() * d.speed * 0.001 + d.phase) % 400;
+        if (t2 < 60) {
+          const alpha = Math.sin((t2 / 60) * Math.PI);
+          const tx2 = dx + t2 * 2;
+          const ty2 = dy + t2;
+          ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+          ctx.fillRect(tx2, ty2, 2, 1);
+          ctx.fillStyle = `rgba(255,255,200,${alpha * 0.5})`;
+          ctx.fillRect(tx2 - 4, ty2 - 2, 4, 1);
+          ctx.fillRect(tx2 - 8, ty2 - 4, 3, 1);
+        }
+      } else if (d.type === 'bird') {
+        const t2 = (Date.now() * 0.003 + d.phase) % (Math.PI * 2);
+        const wingY = Math.round(Math.sin(t2 * 4) * 1.5);
+        const bx2 = dx + Math.round(Math.sin(t2 * 0.3) * 8);
+        ctx.fillStyle = 'rgba(20,20,30,0.7)';
+        ctx.fillRect(bx2, dy + wingY, 2, 1);
+        ctx.fillRect(bx2 - 2, dy + wingY + 1, 2, 1);
+        ctx.fillRect(bx2 + 2, dy + wingY + 1, 2, 1);
+      } else if (d.type === 'butterfly') {
+        const t2 = (Date.now() * 0.004 + d.phase) % (Math.PI * 2);
+        const wy = Math.round(Math.sin(t2 * 6) * 2);
+        ctx.fillStyle = `hsl(${(Date.now() * 0.05 + d.phase * 10) % 360},80%,65%)`;
+        ctx.fillRect(dx - 2, dy + wy, 2, 2);
+        ctx.fillRect(dx + 2, dy + wy, 2, 2);
+        ctx.fillStyle = '#222';
+        ctx.fillRect(dx, dy + wy + 1, 1, 2);
+      } else if (d.type === 'bat') {
+        const t2 = (Date.now() * 0.005 + d.phase) % (Math.PI * 2);
+        const wy = Math.round(Math.sin(t2 * 5) * 1.5);
+        ctx.fillStyle = 'rgba(30,10,40,0.85)';
+        ctx.fillRect(dx - 3, dy + wy, 3, 1);
+        ctx.fillRect(dx + 1, dy + wy, 3, 1);
+        ctx.fillRect(dx, dy + wy + 1, 1, 2);
+      } else if (d.type === 'fish') {
+        const t2 = (Date.now() * 0.002 + d.phase) % (Math.PI * 2);
+        const fx = dx + Math.round(Math.sin(t2) * 12) * d.dir;
+        ctx.fillStyle = 'rgba(80,180,220,0.7)';
+        ctx.fillRect(fx, dy, 4, 2);
+        ctx.fillRect(fx + (d.dir > 0 ? -2 : 4), dy, 2, 2);
+        ctx.fillStyle = 'rgba(200,240,255,0.5)';
+        ctx.fillRect(fx + 1, dy, 1, 1);
+      } else if (d.type === 'hill') {
+        const hc = d.dark ? 'rgba(8,5,20,0.6)' : 'rgba(60,100,40,0.4)';
+        ctx.fillStyle = hc;
+        for (let hy = 0; hy < d.h; hy++) {
+          const hw = Math.round(((d.h - hy) / d.h) * d.w);
+          ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(hw / 2), dy - hy, hw, 1);
+        }
+      } else if (d.type === 'sunrays') {
+        for (let a = 0; a < 8; a++) {
+          const ang = a * Math.PI / 4 + Date.now() * 0.0002;
+          for (let r2 = 12; r2 < 22; r2++) {
+            const alpha = (1 - (r2 - 12) / 10) * 0.25;
+            ctx.fillStyle = `rgba(255,240,100,${alpha})`;
+            ctx.fillRect(dx + Math.round(Math.cos(ang) * r2), dy + Math.round(Math.sin(ang) * r2), 1, 1);
+          }
+        }
+      } else if (d.type === 'wave') {
+        const wt = (Date.now() * 0.003 + d.phase) % (Math.PI * 2);
+        const wy = Math.round(Math.sin(wt) * 1.5);
+        ctx.fillStyle = 'rgba(80,180,255,0.35)';
+        ctx.fillRect(dx, dy + wy, 14, 2);
+        ctx.fillStyle = 'rgba(180,230,255,0.2)';
+        ctx.fillRect(dx + 2, dy + wy - 1, 8, 1);
+      } else if (d.type === 'oceanshine') {
+        const ot = (Date.now() * 0.004 + d.phase) % (Math.PI * 2);
+        const alpha = 0.1 + 0.15 * Math.sin(ot);
+        ctx.fillStyle = `rgba(150,220,255,${alpha})`;
+        ctx.fillRect(dx, dy, 10, 1);
+      } else if (d.type === 'starfish') {
+        ctx.fillStyle = 'rgba(255,140,80,0.7)';
+        ctx.fillRect(dx, dy - 1, 3, 3);
+        ctx.fillRect(dx - 1, dy, 5, 1);
+        ctx.fillRect(dx + 1, dy - 2, 1, 5);
+      } else if (d.type === 'mushroom') {
+        const mc = ['#ff4488','#ff8844','#44ff88','#8844ff'][d.c % 4];
+        ctx.fillStyle = mc;
+        ctx.fillRect(dx, dy - 5, 6, 4);
+        ctx.fillRect(dx - 1, dy - 3, 8, 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillRect(dx + 1, dy - 5, 1, 2);
+        ctx.fillRect(dx + 3, dy - 4, 1, 1);
+        ctx.fillStyle = '#c8a060';
+        ctx.fillRect(dx + 2, dy - 1, 2, 2);
+        // glow
+        ctx.fillStyle = `${mc.slice(0,7)}22`;
+        ctx.fillRect(dx - 2, dy - 7, 10, 8);
+      } else if (d.type === 'poolshine') {
+        const pt = (Date.now() * 0.003 + d.phase) % (Math.PI * 2);
+        ctx.fillStyle = `rgba(80,160,255,${0.08 + 0.08 * Math.sin(pt)})`;
+        ctx.fillRect(dx, dy, 16, 2);
+      } else if (d.type === 'lava') {
+        const lt = (Date.now() * 0.004 + d.phase) % (Math.PI * 2);
+        const lh = Math.round(1 + Math.sin(lt) * 1.5);
+        ctx.fillStyle = `rgba(255,${Math.floor(60 + Math.sin(lt) * 40)},0,0.8)`;
+        ctx.fillRect(dx, dy - lh, 14, lh + 2);
+        ctx.fillStyle = 'rgba(255,200,0,0.4)';
+        ctx.fillRect(dx + 2, dy - lh, 4, 1);
+      } else if (d.type === 'firepillar') {
+        const ft = (Date.now() * 0.006 + d.phase) % (Math.PI * 2);
+        for (let fy = 0; fy < d.h; fy++) {
+          const alpha = (1 - fy / d.h) * (0.6 + 0.3 * Math.sin(ft + fy * 0.3));
+          const r2 = Math.floor(255);
+          const g2 = Math.floor(80 + (1 - fy / d.h) * 120);
+          ctx.fillStyle = `rgba(${r2},${g2},0,${alpha})`;
+          ctx.fillRect(dx + Math.round(Math.sin(ft + fy * 0.5) * 1.5), dy - fy, 3, 1);
+        }
+      } else if (d.type === 'smoke') {
+        const st = (Date.now() * 0.002 + d.phase) % (Math.PI * 2);
+        const sy2 = dy - Math.round(st * 3) % 20;
+        ctx.fillStyle = `rgba(80,60,60,${0.15 + 0.1 * Math.sin(st)})`;
+        ctx.fillRect(dx + Math.round(Math.sin(st) * 2), sy2, 4, 3);
+      } else if (d.type === 'hellcloud') {
+        const cw2 = d.w || 20;
+        ctx.fillStyle = 'rgba(60,20,20,0.5)';
+        ctx.fillRect(dx, dy + 2, cw2, 4);
+        ctx.fillRect(dx + 2, dy, cw2 - 4, 6);
+      } else if (d.type === 'rainbow') {
+        const colors = ['rgba(255,50,50,0.25)','rgba(255,160,0,0.2)','rgba(255,255,0,0.2)','rgba(0,220,0,0.2)','rgba(0,100,255,0.2)','rgba(120,0,255,0.2)'];
+        for (let ri = 0; ri < colors.length; ri++) {
+          ctx.fillStyle = colors[ri];
+          const rr = 40 + ri * 4;
+          for (let ra = 0; ra < Math.PI; ra += 0.08) {
+            ctx.fillRect(dx + Math.round(Math.cos(ra) * rr), dy - Math.round(Math.sin(ra) * rr * 0.5), 2, 2);
+          }
+        }
+      } else if (d.type === 'moonreflect') {
+        const mt = (Date.now() * 0.002) % (Math.PI * 2);
+        ctx.fillStyle = `rgba(200,220,255,${0.08 + 0.06 * Math.sin(mt)})`;
+        ctx.fillRect(dx - 3, dy, 8, 2);
+        ctx.fillRect(dx - 1, dy + 2, 4, 1);
+      } else if (d.type === 'streetlight') {
+        ctx.fillStyle = '#555566';
+        ctx.fillRect(dx, dy - 18, 1, 18);
+        ctx.fillRect(dx, dy - 18, 5, 1);
+        ctx.fillStyle = 'rgba(255,240,180,0.8)';
+        ctx.fillRect(dx + 4, dy - 18, 2, 2);
+        ctx.fillStyle = 'rgba(255,240,180,0.15)';
+        ctx.fillRect(dx - 2, dy - 22, 10, 8);
+      } else if (d.type === 'neon') {
+        const nc = ['rgba(255,0,180,0.9)','rgba(0,255,200,0.9)','rgba(255,200,0,0.9)','rgba(100,100,255,0.9)'][d.c % 4];
+        const nt = (Date.now() * 0.003 + d.c) % (Math.PI * 2);
+        const nalpha = 0.6 + 0.3 * Math.sin(nt);
+        ctx.fillStyle = nc.replace('0.9', String(nalpha));
+        ctx.fillRect(dx, dy, 8, 3);
+        ctx.fillRect(dx + 1, dy - 1, 6, 1);
+      } else if (d.type === 'snow') {
+        const snt = (Date.now() * d.speed * 0.001 + d.phase) % H;
+        ctx.fillStyle = 'rgba(220,235,255,0.6)';
+        ctx.fillRect(dx + Math.round(Math.sin(snt * 0.05) * 3), Math.round(snt), 1, 1);
+      } else if (d.type === 'nebula') {
+        const nr = d.r;
+        for (let ny = -nr; ny <= nr; ny += 2) {
+          const nw2 = Math.round(Math.sqrt(Math.max(0, nr * nr - ny * ny)) * 2);
+          const nalpha = (1 - Math.abs(ny) / nr) * 0.06;
+          ctx.fillStyle = `hsla(${d.hue},70%,60%,${nalpha})`;
+          ctx.fillRect(dx - Math.floor(nw2 / 2), dy + ny, nw2, 2);
+        }
+      } else if (d.type === 'asteroid') {
+        const at = (Date.now() * 0.001 + d.phase) % (Math.PI * 2);
+        const ax = dx + Math.round(Math.cos(at) * 5);
+        const ay = dy + Math.round(Math.sin(at * 0.7) * 3);
+        ctx.fillStyle = 'rgba(140,120,100,0.7)';
+        ctx.fillRect(ax, ay, d.r * 2, d.r);
+        ctx.fillStyle = 'rgba(180,160,140,0.4)';
+        ctx.fillRect(ax, ay, d.r, 1);
       }
     }
   }
@@ -2558,7 +2905,7 @@ function draw() {
   }
 
   // ── Ghost (boss levels) ──
-  if (ghostActive && ghostHeadstart <= 0) {
+  if (ghostActive && isBossLevel(level) && ghostBuffer.length > GHOST_DELAY) {
     const gx = Math.round(ghostPos.x);
     const gy = Math.round(ghostPos.y);
     // Evil version: black body, red head, yellow eyes
@@ -2573,10 +2920,12 @@ function draw() {
     ctx.fillStyle = '#330000';
     ctx.fillRect(gx + 1, gy + 7, 2, 2);
     ctx.fillRect(gx + 3, gy + 7, 2, 2);
-  } else if (ghostActive && ghostHeadstart > 0) {
-    const secs = Math.ceil(ghostHeadstart / 60);
-    const warn = `EVIL YOU IN ${secs}`;
-    drawText(warn, Math.floor((W - textWidth(warn, 1)) / 2), 20, `rgba(255,80,80,${0.5 + 0.5 * Math.sin(Date.now() * 0.01)})`, 1);
+  } else if (ghostActive && isBossLevel(level) && ghostBuffer.length <= GHOST_DELAY) {
+    const secs = Math.ceil((GHOST_DELAY - ghostBuffer.length) / 144);
+    if (secs > 0) {
+      const warn = `EVIL YOU IN ${secs}`;
+      drawText(warn, Math.floor((W - textWidth(warn, 1)) / 2), 20, `rgba(255,80,80,${0.5 + 0.5 * Math.sin(Date.now() * 0.01)})`, 1);
+    }
   }
 
   // ── Player ──
@@ -2691,16 +3040,21 @@ function draw() {
     if (player.deathTimer > 60) {
       const blink = Math.floor(Date.now() / 400) % 2 === 0;
       if (blink) drawText('PRESS SPACE', W / 2 - 22, H / 2 + 10, '#ffffff', 1);
+      // Show infinite record when in infinite mode
+      if (gameMode === 'infinite' && infiniteRecord > 0) {
+        const recStr = `RECORD ${infiniteRecord} PTS`;
+        drawText(recStr, Math.floor((W - textWidth(recStr, 1)) / 2), H / 2 + 20, '#44aaff', 1);
+      }
     }
   }
 
-  if (level === 1 && player && !player.dead) {
+  if (level === 1 && player && !player.dead && gameMode !== 'infinite') {
     const pulse = Math.floor(Date.now() / 500) % 2 === 0;
     if (pulse) drawText('REACH THE GOLD!', 4, H - 12, '#ffff44', 1);
   }
 
-  // ── Brand strip ──
-  ctx.fillStyle = 'rgb(6,2,14)';
+  // ── Brand strip — transparent, drawn below canvas ──
+  ctx.fillStyle = 'rgba(0,0,0,0)';
   ctx.fillRect(0, H, W, BRAND_H);
   drawBrand();
 }
