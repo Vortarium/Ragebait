@@ -1221,14 +1221,14 @@ function update() {
   if (gameState !== 'playing') return;  if (!player) return;
 
   if (player.dead) {
-    player.deathTimer++;
+    player.deathTimer += DT;
     // tick death particles
     if (deathParticles) {
       for (const p of deathParticles) {
-        p.x  += p.vx;
-        p.y  += p.vy;
-        p.vy += 0.18;
-        p.life--;
+        p.x  += p.vx * DT;
+        p.y  += p.vy * DT;
+        p.vy += 0.18 * DT;
+        p.life -= DT;
       }
     }
     return;
@@ -1247,18 +1247,18 @@ function update() {
   const friction   = onSlippery ? 0.992 : 0.75;
   const slipSpeed  = SPEED * 1.8;
 
-  if (left)  { player.vx = onSlippery ? Math.max(player.vx - 0.08, -slipSpeed) : -SPEED; player.facingRight = false; startTimerIfNeeded(); }
-  if (right) { player.vx = onSlippery ? Math.min(player.vx + 0.08,  slipSpeed) :  SPEED; player.facingRight = true;  startTimerIfNeeded(); }
-  if (!left && !right) player.vx *= friction;
+  if (left)  { player.vx = onSlippery ? Math.max(player.vx - 0.08 * DT, -slipSpeed) : -SPEED; player.facingRight = false; startTimerIfNeeded(); }
+  if (right) { player.vx = onSlippery ? Math.min(player.vx + 0.08 * DT,  slipSpeed) :  SPEED; player.facingRight = true;  startTimerIfNeeded(); }
+  if (!left && !right) player.vx *= Math.pow(friction, DT);
 
   // Apply wind
-  player.vx += windForce;
+  player.vx += windForce * DT;
 
-  // ── Coyote frames (6 frames grace after walking off edge) ──
+  // ── Coyote frames ──
   if (player.onGround) {
     player.coyoteFrames = 6;
   } else if (player.coyoteFrames > 0) {
-    player.coyoteFrames--;
+    player.coyoteFrames -= DT;
   }
   const canJump = player.onGround || player.coyoteFrames > 0;
 
@@ -1301,7 +1301,7 @@ function update() {
     }
   }
 
-  player.vy += GRAVITY;
+  player.vy += GRAVITY * DT;
 
   // ── Platform updates ──
   player.onGround   = false;
@@ -1309,15 +1309,15 @@ function update() {
   player.onPlatform = null;
 
   // Apply player velocity first
-  player.x += player.vx;
-  player.y += player.vy;
-  player.blinkTimer++;
+  player.x += player.vx * DT;
+  player.y += player.vy * DT;
+  player.blinkTimer += DT;
 
   for (const p of platforms) {
     // Respawn broken wobble/shakewobble platforms after 2s (120 frames)
     if (p.broken) {
       if (p.type !== 'countdown') {
-        p.respawnTimer++;
+        p.respawnTimer += DT;
         if (p.respawnTimer >= 120) {
           p.broken = false;
           p.crumbling = false;
@@ -2706,7 +2706,12 @@ function draw() {
 }
 
 // ─── Loop ────────────────────────────────────────────────────────────────────
-function loop() {
+let lastFrameTime = performance.now();
+function loop(now) {
+  const elapsed = Math.min(now - lastFrameTime, 50); // cap at 50ms to avoid spiral
+  lastFrameTime = now;
+  // dt normalised to 144fps: at 144fps dt≈1, at 60fps dt≈2.4, at 30fps dt≈4.8
+  window.DT = elapsed / (1000 / 144);
   updateTransition();
   update();
   draw();
@@ -2732,7 +2737,7 @@ if (hasSavedProgress()) menuStarted = true;
 loadHardcoreRecord();
 loadInfiniteRecord();
 
-loop();
+loop(performance.now());
 </script>
 </body>
 </html>
