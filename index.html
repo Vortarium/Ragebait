@@ -28,48 +28,51 @@
       position: fixed;
       bottom: 0;
       left: 0;
-      height: 22vh;
+      height: 28vh;
       pointer-events: none;
     }
     #touch-controls.active { display: flex; }
     .touch-btn {
       position: absolute;
-      bottom: 10px;
-      width: 70px;
-      height: 70px;
-      border-radius: 8px;
-      background: rgba(255,255,255,0.08);
-      border: 2px solid rgba(255,255,255,0.2);
+      bottom: 18px;
+      width: 110px;
+      height: 110px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.1);
+      border: 3px solid rgba(255,255,255,0.25);
       display: flex;
       align-items: center;
       justify-content: center;
       pointer-events: all;
       -webkit-tap-highlight-color: transparent;
       touch-action: none;
-      font-size: 28px;
-      color: rgba(255,255,255,0.5);
+      font-size: 44px;
+      color: rgba(255,255,255,0.55);
       transition: background 0.05s;
+      user-select: none;
     }
     .touch-btn:active, .touch-btn.pressed {
-      background: rgba(255,255,255,0.22);
-      border-color: rgba(255,255,255,0.5);
-      color: rgba(255,255,255,0.9);
+      background: rgba(255,255,255,0.28);
+      border-color: rgba(255,255,255,0.6);
+      color: rgba(255,255,255,0.95);
     }
-    #btn-left  { left: 16px; }
-    #btn-right { left: 100px; }
+    #btn-left  { left: 18px; }
+    #btn-right { left: 148px; }
     #btn-jump  {
-      right: 16px;
-      width: 80px;
-      height: 80px;
+      right: 18px;
+      width: 120px;
+      height: 120px;
       border-radius: 50%;
-      background: rgba(80,200,120,0.12);
-      border-color: rgba(80,200,120,0.35);
-      color: rgba(80,200,120,0.7);
-      font-size: 22px;
+      background: rgba(80,200,120,0.14);
+      border-color: rgba(80,200,120,0.4);
+      color: rgba(80,200,120,0.75);
+      font-size: 20px;
+      font-family: monospace;
+      letter-spacing: 1px;
     }
     #btn-jump:active, #btn-jump.pressed {
-      background: rgba(80,200,120,0.3);
-      border-color: rgba(80,200,120,0.8);
+      background: rgba(80,200,120,0.35);
+      border-color: rgba(80,200,120,0.9);
     }
   </style>
 </head>
@@ -131,7 +134,7 @@ const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) |
                   (navigator.maxTouchPoints > 1 && window.innerWidth < 900);
 
 // On mobile, leave room below canvas for touch controls
-const CTRL_H = IS_MOBILE ? Math.round(window.innerHeight * 0.22) : 0;
+const CTRL_H = IS_MOBILE ? Math.round(window.innerHeight * 0.30) : 0;
 const availH  = window.innerHeight - CTRL_H;
 // Same scale logic on all devices — fit canvas to available space
 const SCALE   = Math.max(1, Math.floor(Math.min(window.innerWidth / W, availH / (H + BRAND_H))));
@@ -176,7 +179,26 @@ if (IS_MOBILE) {
 
   bindTouchBtn('btn-left',  'ArrowLeft');
   bindTouchBtn('btn-right', 'ArrowRight');
-  bindTouchBtn('btn-jump',  ' ');
+
+  // Jump button: sets space key AND handles death respawn
+  const jumpEl = document.getElementById('btn-jump');
+  function jumpPress(e) {
+    e.preventDefault();
+    keys[' '] = true;
+    jumpEl.classList.add('pressed');
+    tryPlayMusic();
+    // Respawn on death (same logic as keydown handler)
+    if (player && player.dead && player.deathTimer > 60) {
+      deaths++;
+      if (gameMode === 'hardcore') { level = 1; deaths = 0; totalMs = 0; timerRunning = false; timerStart = null; }
+      startGhostRecording();
+      initLevel();
+    }
+  }
+  function jumpRelease(e) { e.preventDefault(); keys[' '] = false; jumpEl.classList.remove('pressed'); }
+  jumpEl.addEventListener('touchstart',  jumpPress,   { passive: false });
+  jumpEl.addEventListener('touchend',    jumpRelease, { passive: false });
+  jumpEl.addEventListener('touchcancel', jumpRelease, { passive: false });
 
   // Tap canvas = jump while playing
   canvas.addEventListener('touchstart', e => {
