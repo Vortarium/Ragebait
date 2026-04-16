@@ -2446,18 +2446,18 @@ function drawEndScreen() {
 
   // Evaluate from best to worst — player gets the LOWEST tier where they fail either criterion
   if      (mins < 60  && deaths < 50)  { rating = 'S TIER';  rColor = '#44ffff'; }
-  else if (mins < 60  && deaths < 100) { rating = 'A+ TIER'; rColor = '#88ffaa'; }
-  else if (mins < 70  && deaths < 150) { rating = 'A TIER';  rColor = '#aaffaa'; }
-  else if (mins < 80  && deaths < 200) { rating = 'A- TIER'; rColor = '#ccff88'; }
-  else if (mins < 80  && deaths < 250) { rating = 'B+ TIER'; rColor = '#ffee44'; }
-  else if (mins < 85  && deaths < 300) { rating = 'B TIER';  rColor = '#ffdd44'; }
-  else if (mins < 90  && deaths < 350) { rating = 'B- TIER'; rColor = '#ffcc44'; }
-  else if (mins < 95  && deaths < 400) { rating = 'C+ TIER'; rColor = '#ffaa44'; }
-  else if (mins < 100 && deaths < 450) { rating = 'C TIER';  rColor = '#ff8844'; }
-  else if (mins < 105 && deaths < 500) { rating = 'C- TIER'; rColor = '#ff7744'; }
-  else if (mins < 110 && deaths < 550) { rating = 'D+ TIER'; rColor = '#ff6644'; }
-  else if (mins < 120 && deaths < 600) { rating = 'D TIER';  rColor = '#ff5544'; }
-  else if (mins < 140 && deaths < 800) { rating = 'D- TIER'; rColor = '#ff4444'; }
+  else if (mins < 70  && deaths < 100) { rating = 'A+ TIER'; rColor = '#88ffaa'; }
+  else if (mins < 80  && deaths < 150) { rating = 'A TIER';  rColor = '#aaffaa'; }
+  else if (mins < 90  && deaths < 200) { rating = 'A- TIER'; rColor = '#ccff88'; }
+  else if (mins < 100  && deaths < 300) { rating = 'B+ TIER'; rColor = '#ffee44'; }
+  else if (mins < 110  && deaths < 400) { rating = 'B TIER';  rColor = '#ffdd44'; }
+  else if (mins < 120  && deaths < 500) { rating = 'B- TIER'; rColor = '#ffcc44'; }
+  else if (mins < 130  && deaths < 750) { rating = 'C+ TIER'; rColor = '#ffaa44'; }
+  else if (mins < 140 && deaths < 1000) { rating = 'C TIER';  rColor = '#ff8844'; }
+  else if (mins < 150 && deaths < 1250) { rating = 'C- TIER'; rColor = '#ff7744'; }
+  else if (mins < 160 && deaths < 1500) { rating = 'D+ TIER'; rColor = '#ff6644'; }
+  else if (mins < 170 && deaths < 2000) { rating = 'D TIER';  rColor = '#ff5544'; }
+  else if (mins < 180 && deaths < 2500) { rating = 'D- TIER'; rColor = '#ff4444'; }
   else                                  { rating = 'F TIER';  rColor = '#cc2222'; }
 
   drawText(rating, Math.floor((W - textWidth(rating, 1)) / 2), 126, rColor, 1);
