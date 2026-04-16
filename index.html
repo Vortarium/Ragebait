@@ -104,56 +104,22 @@
     @media (orientation: landscape) and (max-height: 520px) {
       body { justify-content: center; align-items: center; }
 
-      /* Controls panel spans full screen height on each side */
-      #touch-controls {
-        height: 100vh;
-        width: 100vw;
-        bottom: 0;
-        left: 0;
-      }
+      #touch-controls { height: 100vh; width: 100vw; bottom: 0; left: 0; }
 
-      /* All buttons: medium size, vertically centered */
       .touch-btn {
-        width: 110px;
-        height: 110px;
-        font-size: 44px;
-        border-radius: 18px;
-        bottom: auto;
+        width: 110px; height: 110px; font-size: 44px;
+        border-radius: 18px; bottom: auto;
       }
-
-      /* Left arrow — left side, upper center */
-      #btn-left {
-        left: 12px;
-        top: 50%;
-        transform: translateY(-120%);
+      #btn-left  { left: 8px;   top: 50%; transform: translateY(-120%); }
+      #btn-right { left: 126px; top: 50%; transform: translateY(-120%); }
+      #btn-jump  {
+        right: 8px; left: auto; top: 50%; transform: translateY(-50%);
+        width: 130px; height: 130px; font-size: 16px; border-radius: 50%;
       }
-      /* Right arrow — left side, lower center */
-      #btn-right {
-        left: 134px;
-        top: 50%;
-        transform: translateY(-120%);
-      }
-      /* Jump — right side, vertically centered */
-      #btn-jump {
-        right: 12px;
-        left: auto;
-        top: 50%;
-        transform: translateY(-50%);
-        width: 130px;
-        height: 130px;
-        font-size: 16px;
-        border-radius: 50%;
-      }
-
-      /* Back button — top right in landscape */
+      /* Back button — top LEFT in landscape */
       #btn-back-mobile {
-        top: 8px;
-        left: auto;
-        right: 160px;
-        width: 130px;
-        height: 50px;
-        font-size: 15px;
-        border-radius: 12px;
+        top: 6px; left: 6px; right: auto;
+        width: 110px; height: 44px; font-size: 14px; border-radius: 10px;
       }
     }
   </style>
@@ -221,17 +187,18 @@ canvas.height = H + BRAND_H;
 // ─── Mobile detection & scaling ──────────────────────────────────────────────
 const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
                   (navigator.maxTouchPoints > 1 && window.innerWidth < 900);
+// On mobile, skip expensive per-pixel decorations for performance
+const PERF_LOW = IS_MOBILE;
 
 function resizeCanvas() {
   const isLandscape = IS_MOBILE && window.innerWidth > window.innerHeight;
 
   let availW, availH;
   if (isLandscape) {
-    // Landscape: canvas fills full screen — controls overlay on sides
-    // Reserve ~160px each side for arrow buttons (left) and jump (right)
-    const sideReserve = 160;
+    // Landscape: reserve 130px each side for controls, use full height
+    const sideReserve = 130;
     availW = window.innerWidth  - sideReserve * 2;
-    availH = window.innerHeight; // full height, top to bottom
+    availH = window.innerHeight;
   } else if (IS_MOBILE) {
     // Portrait: reserve bottom for controls
     availW = window.innerWidth;
@@ -855,6 +822,8 @@ const BIOME_SKY = {
 function generateBgDecorForBiome(biome, levelWidth, rng) {
   const decor = [];
   const groundY = H - 30;
+  // On mobile, reduce decor density to improve performance
+  const D = PERF_LOW ? 0.4 : 1.0; // density multiplier
 
   if (biome === 'night') {
     decor.push({ type: 'moon', x: 60, y: 28 });
@@ -2526,14 +2495,26 @@ function draw() {
 
   // ── Background decorations ──
   if (bgDecor) {
+    // On mobile, skip decorations that are off-screen for performance
+    const camLeft  = camera.x - 20;
+    const camRight = camera.x + W + 20;
+
     for (const d of bgDecor) {
       // In infinite mode, tile decorations by wrapping x relative to camera
       let rawX = d.x;
       if (gameMode === 'infinite' && bgDecor.length > 0) {
-        const levelW = Math.max(...bgDecor.map(b => b.x)) + 100;
+        // Cache levelW to avoid O(n) spread every frame
+        if (!bgDecor._levelW) {
+          let mx = 0;
+          for (const b of bgDecor) if (b.x > mx) mx = b.x;
+          bgDecor._levelW = mx + 100;
+        }
+        const levelW = bgDecor._levelW;
         rawX = ((d.x - camera.x) % levelW + levelW) % levelW + camera.x - levelW / 2;
       }
       const dx = Math.round(rawX), dy = Math.round(d.y);
+      // Skip if off-screen (performance cull)
+      if (PERF_LOW && dx < camLeft - 30 || dx > camRight + 30) continue;
       if (d.type === 'star') {
         const alpha = d.b * (0.6 + 0.4 * Math.sin(Date.now() * 0.0008 + d.x));
         ctx.fillStyle = `rgba(255,255,255,${alpha})`;
@@ -2691,33 +2672,46 @@ function draw() {
         }
       } else if (d.type === 'mountain') {
         const layer = d.layer || 0;
-        const baseCol = layer === 0 ? [55,72,105] : [38,52,80];
+        const baseCol = layer === 0 ? [55,72,105] : layer === 1 ? [38,52,80] : [25,35,60];
         const snowCol = layer === 0 ? [220,235,255] : [180,200,230];
-        // Mountain body with shading
-        for (let my = 0; my < d.h; my++) {
-          const mw = Math.round(((d.h - my) / d.h) * d.w);
-          const shade = my < d.h * 0.5 ? 0 : Math.floor((my - d.h * 0.5) / d.h * 30);
-          ctx.fillStyle = `rgb(${baseCol[0]+shade},${baseCol[1]+shade},${baseCol[2]+shade})`;
-          ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
-          // shadow right side
-          if (mw > 4) {
-            ctx.fillStyle = 'rgba(0,0,0,0.2)';
-            ctx.fillRect(dx + Math.floor(d.w / 2) + Math.floor(mw * 0.1), dy - my, Math.floor(mw * 0.4), 1);
+        if (PERF_LOW) {
+          // Mobile: flat fill, no per-row shading
+          ctx.fillStyle = `rgb(${baseCol[0]},${baseCol[1]},${baseCol[2]})`;
+          for (let my = 0; my < d.h; my += 2) {
+            const mw = Math.round(((d.h - my) / d.h) * d.w);
+            ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 2);
           }
-        }
-        // Snow cap
-        ctx.fillStyle = `rgb(${snowCol[0]},${snowCol[1]},${snowCol[2]})`;
-        for (let my = d.h - Math.floor(d.h * 0.28); my < d.h; my++) {
-          const mw = Math.round(((d.h - my) / d.h) * d.w);
-          ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
-        }
-        // Snow highlight
-        ctx.fillStyle = 'rgba(255,255,255,0.4)';
-        for (let my = d.h - Math.floor(d.h * 0.1); my < d.h; my++) {
-          const mw = Math.round(((d.h - my) / d.h) * d.w * 0.4);
-          ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
-        }
-      } else if (d.type === 'pinetree') {
+          ctx.fillStyle = `rgb(${snowCol[0]},${snowCol[1]},${snowCol[2]})`;
+          for (let my = d.h - Math.floor(d.h * 0.28); my < d.h; my += 2) {
+            const mw = Math.round(((d.h - my) / d.h) * d.w);
+            ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 2);
+          }
+        } else {
+          // Desktop: full shading
+          for (let my = 0; my < d.h; my++) {
+            const mw = Math.round(((d.h - my) / d.h) * d.w);
+            const shade = my < d.h * 0.5 ? 0 : Math.floor((my - d.h * 0.5) / d.h * 30);
+            ctx.fillStyle = `rgb(${baseCol[0]+shade},${baseCol[1]+shade},${baseCol[2]+shade})`;
+            ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
+            if (mw > 4) {
+              ctx.fillStyle = 'rgba(0,0,0,0.2)';
+              ctx.fillRect(dx + Math.floor(d.w / 2) + Math.floor(mw * 0.1), dy - my, Math.floor(mw * 0.4), 1);
+            }
+          }
+          // Snow cap
+          ctx.fillStyle = `rgb(${snowCol[0]},${snowCol[1]},${snowCol[2]})`;
+          for (let my = d.h - Math.floor(d.h * 0.28); my < d.h; my++) {
+            const mw = Math.round(((d.h - my) / d.h) * d.w);
+            ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
+          }
+          // Snow highlight
+          ctx.fillStyle = 'rgba(255,255,255,0.4)';
+          for (let my = d.h - Math.floor(d.h * 0.1); my < d.h; my++) {
+            const mw = Math.round(((d.h - my) / d.h) * d.w * 0.4);
+            ctx.fillRect(dx + Math.floor(d.w / 2) - Math.floor(mw / 2), dy - my, mw, 1);
+          }
+        } // end desktop else
+     } else if (d.type === 'pinetree') {
         const ph = d.h || 16;
         ctx.fillStyle = '#3a2a18';
         ctx.fillRect(dx + 3, dy - Math.floor(ph * 0.35), 2, Math.floor(ph * 0.35));
@@ -2971,8 +2965,8 @@ function draw() {
           ctx.fillRect(tx2 + taper - 1, dy - py2, 1, 1);
         }
 
-        // Lush drooping fronds — 7 fronds, each with multiple leaf segments that curve down
-        const frondCount = 7;
+        // Lush drooping fronds — 7 fronds on desktop, 4 on mobile
+        const frondCount = PERF_LOW ? 4 : 7;
         const wind = Math.sin(Date.now() * 0.001 + (d.phase || 0) * 0.01) * 1.5;
         for (let fi = 0; fi < frondCount; fi++) {
           // Spread fronds in a full arc, biased downward for droop
@@ -3641,7 +3635,7 @@ function draw() {
 // ─── Loop ────────────────────────────────────────────────────────────────────
 let lastFrameTime = performance.now();
 function loop(now) {
-  const elapsed = Math.min(now - lastFrameTime, 50); // cap at 50ms to avoid spiral
+  const elapsed = Math.min(now - lastFrameTime, PERF_LOW ? 33 : 50); // tighter cap on mobile
   lastFrameTime = now;
   // dt normalised to 144fps: at 144fps dt≈1, at 60fps dt≈2.4, at 30fps dt≈4.8
   window.DT = elapsed / (1000 / 144);
